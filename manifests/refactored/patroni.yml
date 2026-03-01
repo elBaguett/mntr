@@ -1,0 +1,21 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: patroni
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://github.com/elBaguett/mntr.git'
+    targetRevision: main
+    path: manifests/refactored/patroni
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: mntr
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
