@@ -1,0 +1,9 @@
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait cloud-init to finish
+      wait_for:
+        path: /var/lib/cloud/instance/boot-finished
+        state: present
+        delay: 3
+        timeout: 300

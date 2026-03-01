@@ -1,0 +1,14 @@
+[bastion]
+bastion ansible_host=${bastion_public_ip} ansible_user=${ansible_user}
+[masters]
+master1 ansible_host=${master_1} ansible_user=${ansible_user}
+master2 ansible_host=${master_2} ansible_user=${ansible_user}
+[workers]
+worker1 ansible_host=${worker_1} ansible_user=${ansible_user}
+worker2 ansible_host=${worker_2} ansible_user=${ansible_user}
+worker3 ansible_host=${worker_3} ansible_user=${ansible_user}
+worker4 ansible_host=${worker_4} ansible_user=${ansible_user}
+
+[all:vars]
+ansible_ssh_private_key_file=${ansible_ssh_private_key_file}
+ansible_ssh_common_args='-o ProxyCommand="ssh -i ${ansible_ssh_private_key_file} -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -W %h:%p ${ansible_user}@${bastion_public_ip}" -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=60 -o ServerAliveInterval=30 -o ServerAliveCountMax=5'

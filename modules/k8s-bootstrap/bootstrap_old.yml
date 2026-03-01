@@ -1,0 +1,219 @@
+---
+- hosts: all
+  become: yes
+  tasks:
+    - name: DEBUG_MARKER
+      ansible.builtin.shell: 'echo "I AM THE ACTUAL PLAYBOOK IN USE" > /tmp/actual_playbook_marker'
+
+    - name: Disable swap (k8s requirement)
+      ansible.builtin.shell: |
+        swapoff -a
+        sed -i '/ swap / s/^/#/' /etc/fstab
+
+    - name: Install basic packages (Amazon)
+      ansible.builtin.yum:
+        name:
+          - ca-certificates
+          - python3
+          - sudo
+          - tar
+        state: present
+        update_cache: yes
+      when: ansible_os_family in ["RedHat", "Amazon"]
+
+    - name: Install Docker (Amazon)
+      ansible.builtin.yum:
+        name: docker
+        state: present
+        update_cache: yes
+      when: ansible_os_family in ["RedHat", "Amazon"]
+
+    - name: Enable and start Docker
+      ansible.builtin.systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Add Kubernetes YUM repo
+      ansible.builtin.yum_repository:
+        name: kubernetes
+        description: Kubernetes repo
+        baseurl: "https://pkgs.k8s.io/core:/stable:/v1.29/rpm/"
+        gpgcheck: yes
+        gpgkey: https://pkgs.k8s.io/core:/stable:/v1.29/rpm/repodata/repomd.xml.key
+        enabled: yes
+
+    - name: Install kubelet, kubeadm, kubectl (Amazon)
+      ansible.builtin.yum:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+        update_cache: yes
+
+    - name: Enable and start kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: yes
+        state: started
+
+    - name: Copy SSH private key to node
+      ansible.builtin.copy:
+        src: /mnt/c/Users/knmalyshev/projects/awsk8s/keys/aws-new
+        dest: /home/ec2-user/aws-new
+        owner: ec2-user
+        group: ec2-user
+        mode: '0600'
+      when: inventory_hostname != "bastion"    
+
+    - name: Hold versions
+      debug:
+        msg: "Package hold not implemented for yum, please update exclude if needed."
+
+- hosts: master1
+  become: yes
+  vars:
+    pod_cidr: "10.244.0.0/16"
+  tasks:
+    - name: Init the Kubernetes master
+      ansible.builtin.shell: |
+        kubeadm init \
+          --control-plane-endpoint="{{ hostvars['master1'].ansible_host }}:6443" \
+          --apiserver-advertise-address "{{ ansible_host }}" \
+          --pod-network-cidr={{ pod_cidr }} \
+          --upload-certs
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Create .kube directory for ec2-user
+      ansible.builtin.file:
+        path: /home/ec2-user/.kube
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: 0700
+
+    - name: Copy kubeadmin config to ec2-user
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/ec2-user/.kube/config
+        owner: ec2-user
+        group: ec2-user
+        mode: 0600
+        remote_src: yes
+      become: yes
+
+    - name: Wait until kube-apiserver is ready
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 6443
+        delay: 5
+        timeout: 180
+        state: started
+
+    - name: Wait until kube-apiserver is truly ready for kubectl
+      ansible.builtin.shell: |
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes
+      register: result
+      become: yes
+      retries: 20
+      delay: 6
+      until: result.rc == 0    
+
+    - name: Wait for all kube-system pods to be Running
+      ansible.builtin.shell: |
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get pods -n kube-system --no-headers | grep -v "Running\|Completed" || true
+      register: pod_status
+      retries: 30
+      delay: 10
+      until: pod_status.stdout == ""
+      changed_when: false
+      failed_when: false
+      become: yes
+
+    - name: Generate kubeadm join command for workers
+      ansible.builtin.shell: kubeadm token create --print-join-command
+      register: worker_join
+      retries: 10
+      delay: 12
+      until: worker_join.rc == 0
+      become: yes   
+
+    - name: Generate kubeadm join command for control-plane
+      ansible.builtin.shell: |
+        kubeadm token create --print-join-command --certificate-key $(kubeadm init phase upload-certs --upload-certs | tail -1) | grep -- '--control-plane'
+      register: master_join
+
+    - name: Generate kubeadm join command for workers
+      ansible.builtin.shell: kubeadm token create --print-join-command
+      retries: 10
+      delay: 12
+      until: worker_join.rc == 0
+      become: yes
+      register: worker_join
+
+    - name: Save join command for control-plane
+      ansible.builtin.copy:
+        dest: /tmp/master_join.sh
+        content: "{{ master_join.stdout }}"
+        owner: ec2-user
+        group: ec2-user
+        mode: '0700'
+
+    - name: Save join command for workers
+      ansible.builtin.copy:
+        dest: /tmp/worker_join.sh
+        content: "{{ worker_join.stdout }}"
+        owner: ec2-user
+        group: ec2-user
+        mode: '0700'
+
+    - name: Add short sleep for stability
+      ansible.builtin.pause:
+        seconds: 15
+
+- hosts: master2
+  become: yes
+  tasks:
+    - name: Fetch control-plane join command from master1
+      ansible.builtin.shell: >
+        ssh -i /home/ec2-user/aws-new -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ec2-user@{{ hostvars['master1'].ansible_host }} 'cat /tmp/master_join.sh'
+      register: master_join
+      become: yes
+
+    - name: Run control-plane join
+      ansible.builtin.shell: "{{ master_join.stdout }} --apiserver-advertise-address {{ ansible_host }} --v=5"
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Create .kube directory for ec2-user
+      ansible.builtin.file:
+        path: /home/ec2-user/.kube
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: 0700
+
+    - name: Copy kubeadmin config to ec2-user
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/ec2-user/.kube/config
+        owner: ec2-user
+        group: ec2-user
+        mode: 0600
+        remote_src: yes
+      become: yes
+
+- hosts: workers
+  become: yes
+  tasks:
+    - name: Fetch worker join command from master1
+      ansible.builtin.shell: >
+        ssh -o StrictHostKeyChecking=no ec2-user@{{ hostvars['master1'].ansible_host }} 'cat /tmp/worker_join.sh'
+      register: join_cmd
+
+    - name: Join the node to cluster
+      ansible.builtin.shell: "{{ join_cmd.stdout }} --v=5"
+      args:
+        creates: /etc/kubernetes/kubelet.conf

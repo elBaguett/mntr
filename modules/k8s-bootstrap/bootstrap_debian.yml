@@ -1,0 +1,440 @@
+---
+- hosts: all
+  become: yes
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install basic utils
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - python3
+          - sudo
+          - tar
+          - netcat-openbsd
+          - iproute2
+          - gnupg
+          - curl
+          - jq
+        state: present
+
+    - name: Collect all hostnames and ips
+      set_fact:
+        all_nodes_hosts: |
+          {% for host in groups['all'] %}
+          {{ hostvars[host]['ansible_host'] }} {{ hostvars[host]['inventory_hostname'] }} {{ hostvars[host]['ansible_hostname'] }} {{ hostvars[host]['inventory_hostname_short'] }}
+          {% endfor %}
+
+    - name: Add distributed AWS FQDN hostnames to /etc/hosts (auto-region)
+      blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} ANSIBLE K8S HOSTS"
+        block: |
+          127.0.0.1 localhost
+          {% for host in groups['all'] %}
+          {% set region = 'us-east-1' if hostvars[host]['ansible_host'].startswith('10.10.') else 'eu-west-1' %}
+          {% set ip_dash = hostvars[host]['ansible_host'].replace('.', '-') %}
+          {{ hostvars[host]['ansible_host'] }} {{ hostvars[host]['inventory_hostname'] }} ip-{{ ip_dash }}.{{ region }}.compute.internal ip-{{ ip_dash }}.ec2.internal
+          {% endfor %}     
+
+    - name: Copy SSH-key
+      ansible.builtin.copy:
+        src: ~/.ssh/id_ed25519
+        dest: /home/ubuntu/aws-new
+        owner: "ubuntu"
+        group: "ubuntu"
+        mode: '0600'
+      when: inventory_hostname != "bastion"
+
+    - name: Ensure /etc/apt/keyrings exists
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Download Kubernetes APT key (v1.35)
+      ansible.builtin.shell: |
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.35/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Set permissions for apt keyring
+      file:
+        path: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Setup Kubernetes apt repo (v1.35)
+      ansible.builtin.shell: |
+        echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.35/deb/ /" > /etc/apt/sources.list.d/kubernetes.list
+      args:
+        creates: /etc/apt/sources.list.d/kubernetes.list
+
+    - name: Set permissions for kubernetes.list
+      file:
+        path: /etc/apt/sources.list.d/kubernetes.list
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Update apt cache after adding k8s repo
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install kubelet and kubeadm
+      ansible.builtin.apt:
+        name:
+          - kubelet
+          - kubeadm
+        state: latest
+
+    - name: Hold kubelet and kubeadm packages
+      dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm
+
+    - name: Get kubectl version (latest stable)
+      shell: curl -L -s https://dl.k8s.io/release/stable.txt
+      register: kubectl_version
+      changed_when: false
+
+    - name: Set kubectl version
+      set_fact:
+        kubectl_ver: "{{ kubectl_version.stdout }}"
+
+    - name: Download kubectl
+      get_url:
+        url: "https://dl.k8s.io/release/{{kubectl_ver}}/bin/linux/amd64/kubectl"
+        dest: /tmp/kubectl
+        mode: '0755'
+        force: true
+
+    - name: Download kubectl checksum
+      get_url:
+        url: "https://dl.k8s.io/release/{{kubectl_ver}}/bin/linux/amd64/kubectl.sha256"
+        dest: /tmp/kubectl.sha256
+        mode: '0644'
+        force: true
+
+    - name: Validate kubectl binary checksum
+      shell: |
+        echo "$(cat /tmp/kubectl.sha256) /tmp/kubectl" | sha256sum --check
+      args:
+        chdir: /tmp
+
+    - name: Install kubectl
+      shell: |
+        install -o root -g root -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+
+    - name: Remove kubectl.sha256 and temp kubectl
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/kubectl.sha256
+        - /tmp/kubectl
+
+    - name: Ensure kubectl found in PATH
+      ansible.builtin.shell: kubectl version --client
+      register: kubectl_version
+      changed_when: false
+
+    - name: Print kubectl version
+      ansible.builtin.debug:
+        var: kubectl_version.stdout_lines
+
+    - name: Install container deps
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - containerd
+        state: latest
+
+    - name: Remove containerd runtime data (clean db)
+      ansible.builtin.shell: |
+        systemctl stop kubelet || true
+        systemctl stop containerd || true
+        rm -rf /var/lib/containerd /run/containerd /var/run/containerd
+      ignore_errors: yes
+
+    - name: Generate containerd config.toml (systemd cgroup, pause 3.10.1)
+      ansible.builtin.shell: |
+        mkdir -p /etc/containerd
+        containerd config default > /etc/containerd/config.toml
+        sed -i 's#^\\(\\s*SystemdCgroup = \\).*#\\1true#' /etc/containerd/config.toml
+        sed -i 's#sandbox_image = \".*\"#sandbox_image = \"registry.k8s.io/pause:3.10.1\"#' /etc/containerd/config.toml
+
+    - name: Ensure correct permissions on config.toml
+      file:
+        path: /etc/containerd/config.toml
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Ensure br_netfilter kernel module is loaded
+      ansible.builtin.modprobe:
+        name: br_netfilter
+        state: present
+    
+    - name: Enable sysctls required by Kubernetes/Calico
+      sysctl:
+        name: "{{ item }}"
+        value: '1'
+        sysctl_set: yes
+        state: present
+        reload: yes
+      loop:
+        - net.bridge.bridge-nf-call-iptables
+        - net.bridge.bridge-nf-call-ip6tables
+        - net.ipv4.ip_forward    
+
+    - name: Enable and start containerd
+      ansible.builtin.systemd:
+        name: containerd
+        enabled: yes
+        state: started
+
+    - name: Enable and start kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: yes
+        state: started
+
+    - name: Download CNI plugins
+      get_url:
+        url: "https://github.com/containernetworking/plugins/releases/download/v1.4.0/cni-plugins-linux-amd64-v1.4.0.tgz"
+        dest: /tmp/cni-plugins.tgz
+        mode: '0644'
+
+    - name: Create CNI bin dir
+      file:
+        path: /usr/lib/cni
+        state: directory
+        mode: '0755'
+
+    - name: Unpack CNI plugins
+      unarchive:
+        src: /tmp/cni-plugins.tgz
+        dest: /usr/lib/cni
+        remote_src: yes
+
+    - name: restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+
+    - name: Patch kubeadm-flags.env for kubelet (workaround for unset env)
+      copy:
+        dest: /var/lib/kubelet/kubeadm-flags.env
+        content: |
+          KUBELET_KUBEADM_ARGS=--cgroup-driver=systemd --container-runtime-endpoint=unix:///var/run/containerd/containerd.sock
+        owner: root
+        group: root
+        mode: '0644'    
+
+    - name: restart kubelet
+      systemd:
+        name: kubelet
+        state: restarted
+
+    - name: Check if root (/) is mounted rw (etcd is on /)
+      shell: 'findmnt -no OPTIONS / | grep "\brw\b"'
+      register: root_rw
+      failed_when: root_rw.rc != 0    
+
+# - hosts: master1
+  # become: yes
+  # vars:
+    # pod_cidr: "10.244.0.0/16"
+    # kube_user: "ubuntu"
+  # tasks:
+    # - name: Check cluster init
+      # stat:
+        # path: /etc/kubernetes/admin.conf
+      # register: admin_conf
+
+    # - name: Stop if init
+      # fail:
+        # msg: "master initialized"
+      # when: admin_conf.stat.exists
+
+    # - name: kubeadm init (Debian)
+      # shell: |
+        # kubeadm init \
+          # --control-plane-endpoint="{{ hostvars['master1'].ansible_host }}:6443" \
+          # --apiserver-advertise-address "{{ ansible_host }}" \
+          # --pod-network-cidr={{ pod_cidr }} \
+          # --upload-certs
+      # args:
+        # creates: /etc/kubernetes/admin.conf    
+
+    # - name: Wait apiserver port
+      # wait_for:
+        # port: 6443
+        # host: "{{ ansible_host }}"
+        # state: started
+        # delay: 5
+        # timeout: 300
+
+    # # - name: Deploy CoreDNS (если нужно)
+    # #   environment:
+    #     KUBECONFIG: /etc/kubernetes/admin.conf
+    #   shell: |
+    #     kubectl apply -f https://github.com/coredns/deployment/kubernetes/coredns.yaml
+    #   args:
+    #     creates: /etc/kubernetes/addon.coredns.init
+
+    # - name: Create kube config
+    #   ansible.builtin.shell: |
+    #     mkdir -p $HOME/.kube
+    #     cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+    #     chown $(id -u):$(id -g) $HOME/.kube/config
+
+    # - name: Install Calico CNI
+    #   become_user: "{{ kube_user }}"
+    #   environment:
+    #     KUBECONFIG: /home/{{ kube_user }}/.kube/config
+    #   shell: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+
+#     - name: Copy all plugins from /opt/cni/bin and /usr/local/lib/cni to /usr/lib/cni
+#       ansible.builtin.shell: |
+#         cp /opt/cni/bin/calico /usr/lib/cni/
+#         cp /opt/cni/bin/calico-ipam /usr/lib/cni/
+
+#     - name: Wait until kube-apiserver is ready for kubectl
+#       shell: kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes
+#       register: result
+#       retries: 20
+#       delay: 6
+#       until: result.rc == 0
+
+#     - name: Wait until all kube-system pods Running/Completed
+#       shell: kubectl --kubeconfig /etc/kubernetes/admin.conf get pods -n kube-system --no-headers | grep -v "Running\|Completed" || true
+#       register: pod_status
+#       retries: 30
+#       delay: 10
+#       until: pod_status.stdout == ""
+#       changed_when: false
+#       failed_when: false
+
+#     - name: Get upload-certs key
+#       shell: kubeadm init phase upload-certs --upload-certs | tail -1
+#       register: cert_key
+
+#     - name: Generate master join 
+#       shell: kubeadm token create --print-join-command --certificate-key {{ cert_key.stdout }} | grep -- '--control-plane'
+#       register: master_join
+
+#     - name: Generate worker join
+#       shell: kubeadm token create --print-join-command
+#       register: worker_join
+#       retries: 10
+#       delay: 12
+#       until: worker_join.rc == 0
+
+#     - name: Save joins
+#       copy:
+#         dest: /tmp/master_join.sh
+#         content: "{{ master_join.stdout }}"
+#         owner: "{{ kube_user }}"
+#         group: "{{ kube_user }}"
+#         mode: '0700'
+
+#     - copy:
+#         dest: /tmp/worker_join.sh
+#         content: "{{ worker_join.stdout }}"
+#         owner: "{{ kube_user }}"
+#         group: "{{ kube_user }}"
+#         mode: '0700'
+
+#     - name: Sleep
+#       pause:
+#         seconds: 15
+
+# - hosts: master2
+#   become: yes
+#   vars:
+#     kube_user: "admin"
+#   tasks:
+#     - stat:
+#         path: /etc/kubernetes/admin.conf
+#       register: admin_conf
+
+#     - fail:
+#         msg: "master initialized"
+#       when: admin_conf.stat.exists
+
+#     - shell: >
+#         ssh -i /home/{{ kube_user }}/aws-new -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no {{ kube_user }}@{{ hostvars['master1'].ansible_host }} 'cat /tmp/master_join.sh'
+#       register: master_join
+
+#     - shell: "{{ master_join.stdout }} --apiserver-advertise-address {{ ansible_host }} --v=5"
+#       args:
+#         creates: /etc/kubernetes/admin.conf
+
+#     - wait_for:
+#         port: 6443
+#         host: "{{ ansible_host }}"
+#         delay: 10
+#         timeout: 180
+
+#     - wait_for:
+#         path: /etc/kubernetes/admin.conf
+#         state: present
+#         delay: 5
+#         timeout: 60
+
+#     - file:
+#         path: "/home/{{ kube_user }}/.kube"
+#         state: directory
+#         owner: "{{ kube_user }}"
+#         group: "{{ kube_user }}"
+#         mode: 0700
+
+#     - copy:
+#         src: /etc/kubernetes/admin.conf
+#         dest: "/home/{{ kube_user }}/.kube/config"
+#         owner: "{{ kube_user }}"
+#         group: "{{ kube_user }}"
+#         mode: 0600
+#         remote_src: yes
+
+#     - wait_for:
+#         host: "{{ hostvars['master1']['ansible_host'] }}"
+#         port: 6443
+#         timeout: 180
+#         state: started
+
+#     - set_fact:
+#         kube_node_name: "ip-{{ ansible_host | replace('.', '-') }}.ec2.internal"
+
+#     - shell: >
+#         kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes {{ kube_node_name }} --output json | grep -E '"Ready".*true'
+#       register: node_status
+#       retries: 10
+#       delay: 10
+#       until: node_status.stdout.find('"Ready".*true') != -1
+#       ignore_errors: yes
+
+#     - fail:
+#         msg: "Node {{ kube_node_name }} is not Ready after join!"
+#       when: node_status.stdout.find('"Ready".*true') == -1
+
+# - hosts: workers
+#   become: yes
+#   vars:
+#     kube_user: "admin"
+#   tasks:
+#     - shell: >
+#         ssh -i /home/{{ kube_user }}/aws-new -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no {{ kube_user }}@{{ hostvars['master1'].ansible_host }} 'cat /tmp/worker_join.sh'
+#       register: join_cmd
+
+#     - shell: "{{ join_cmd.stdout }} --v=5"
+#       args:
+#         creates: /etc/kubernetes/kubelet.conf

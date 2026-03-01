@@ -1,0 +1,346 @@
+---
+- hosts: all
+  become: yes
+  tasks:
+    - name: Install basic packages (Amazon)
+      ansible.builtin.yum:
+        name:
+          - ca-certificates
+          - python3
+          - sudo
+          - tar
+          - nc
+          - iproute-tc
+        state: present
+        update_cache: yes
+      when: ansible_os_family in ["RedHat", "Amazon"]
+
+    - name: Collect all hostnames and ips
+      set_fact:
+        all_nodes_hosts: |
+          {% for host in groups['all'] %}
+          {{ hostvars[host]['ansible_host'] }} {{ hostvars[host]['inventory_hostname'] }} {{ hostvars[host]['ansible_hostname'] }} {{ hostvars[host]['inventory_hostname_short'] }}
+          {% endfor %}
+
+    - name: Add distributed AWS FQDN hostnames to /etc/hosts (auto-region)
+      blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} ANSIBLE K8S HOSTS"
+        block: |
+          127.0.0.1 localhost
+          {% for host in groups['all'] %}
+          {% set region = 'us-east-1' if hostvars[host]['ansible_host'].startswith('10.10.') else 'eu-west-1' %}
+          {% set ip_dash = hostvars[host]['ansible_host'].replace('.', '-') %}
+          {{ hostvars[host]['ansible_host'] }} {{ hostvars[host]['inventory_hostname'] }} ip-{{ ip_dash }}.{{ region }}.compute.internal ip-{{ ip_dash }}.ec2.internal
+          {% endfor %}  
+
+    - name: Install Docker (Amazon)
+      ansible.builtin.yum:
+        name: docker
+        state: present
+        update_cache: yes
+      when: ansible_os_family in ["RedHat", "Amazon"]
+
+    - name: Enable and start Docker
+      ansible.builtin.systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Add Kubernetes YUM repo
+      ansible.builtin.yum_repository:
+        name: kubernetes
+        description: Kubernetes repo
+        baseurl: "https://pkgs.k8s.io/core:/stable:/v1.29/rpm/"
+        gpgcheck: yes
+        gpgkey: https://pkgs.k8s.io/core:/stable:/v1.29/rpm/repodata/repomd.xml.key
+        enabled: yes
+
+    - name: Install kubelet, kubeadm, kubectl (Amazon)
+      ansible.builtin.yum:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+        update_cache: yes
+
+    - name: Enable and start kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: yes
+        state: stopped
+
+    - name: Copy SSH private key to node
+      ansible.builtin.copy:
+        src: ~/.ssh/id_ed25519
+        dest: /home/ec2-user/aws-new
+        owner: ec2-user
+        group: ec2-user
+        mode: '0600'
+      when: inventory_hostname != "bastion"
+
+    - name: Hold versions
+      debug:
+        msg: "Package hold not implemented for yum, please update exclude if needed."
+
+- hosts: master1
+  become: yes
+  vars:
+    pod_cidr: "10.244.0.0/16"
+  tasks:
+    - name: Check admin conf
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: admin_conf
+
+    - name: Check 6443 port
+      ansible.builtin.shell: "ss -ltn | grep :6443 || true"
+      register: port_status
+
+    - name: Fail if master already initialized
+      ansible.builtin.fail:
+        msg: "master initialized"
+      when: admin_conf.stat.exists
+
+    - name: Fail if port 6443 already in use
+      ansible.builtin.fail:
+        msg: "port is alreadty in use"
+      when: port_status.stdout != ''
+
+    - name: Init the Kubernetes master (HA)
+      ansible.builtin.shell: |
+        kubeadm init \
+          --control-plane-endpoint="{{ hostvars['master1'].ansible_host }}:6443" \
+          --apiserver-advertise-address "{{ ansible_host }}" \
+          --pod-network-cidr={{ pod_cidr }} \
+          --upload-certs \
+          --skip-phases=addon/coredns
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Start kubelet after init
+      systemd:
+        name: kubelet
+        state: started    
+
+    - name: Fix kube-proxy init if failed
+      ansible.builtin.shell: |
+        kubeadm init phase addon kube-proxy --config=/etc/kubernetes/kubeadm-config.yaml
+      args:
+        creates: /etc/kubernetes/addon.kubeproxy.init.ok
+      register: kproxy
+      failed_when: false
+
+    - name: Wait for kube-apiserver port
+      wait_for:
+        port: 6443
+        host: "{{ ansible_host }}"
+        state: started
+        delay: 5
+        timeout: 300
+
+    - name: Apply coredns phase 
+      shell: kubeadm init phase addon/coredns
+      args:
+        creates: /etc/kubernetes/addon.coredns.init    
+
+    - name: Mark kube-proxy phase complete
+      ansible.builtin.shell: touch /etc/kubernetes/addon.kubeproxy.init.ok
+      when: kproxy.rc == 0    
+
+    - name: Create .kube directory for ec2-user
+      ansible.builtin.file:
+        path: /home/ec2-user/.kube
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: 0700
+
+    - name: Copy kubeadmin config to ec2-user
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/ec2-user/.kube/config
+        owner: ec2-user
+        group: ec2-user
+        mode: 0700
+        remote_src: yes
+      become: yes
+
+    - name: Install Calico CNI
+      become_user: ec2-user
+      environment:
+        KUBECONFIG: /home/ec2-user/.kube/config
+      shell: |
+        kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml  
+
+    - name: Wait until kube-apiserver is ready
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 6443
+        delay: 5
+        timeout: 180
+        state: started
+
+    - name: Wait until kube-apiserver is truly ready for kubectl
+      ansible.builtin.shell: |
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes
+      register: result
+      become: yes
+      retries: 20
+      delay: 6
+      until: result.rc == 0
+
+    - name: Wait for all kube-system pods to be Running
+      ansible.builtin.shell: |
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get pods -n kube-system --no-headers | grep -v "Running\|Completed" || true
+      register: pod_status
+      retries: 30
+      delay: 10
+      until: pod_status.stdout == ""
+      changed_when: false
+      failed_when: false
+      become: yes
+
+    - name: Get kubeadm upload-certs key
+      ansible.builtin.shell: kubeadm init phase upload-certs --upload-certs | tail -1
+      register: cert_key
+      become: yes
+
+    - name: Generate kubeadm join command for control-plane
+      ansible.builtin.shell: |
+        kubeadm token create --print-join-command --certificate-key {{ cert_key.stdout }} | grep -- '--control-plane'
+      register: master_join
+      become: yes
+
+    - name: Generate kubeadm join command for workers
+      ansible.builtin.shell: kubeadm token create --print-join-command
+      register: worker_join
+      retries: 10
+      delay: 12
+      until: worker_join.rc == 0
+      become: yes
+
+    - name: Save join command for control-plane
+      ansible.builtin.copy:
+        dest: /tmp/master_join.sh
+        content: "{{ master_join.stdout }}"
+        owner: ec2-user
+        group: ec2-user
+        mode: '0700'
+
+    - name: Save join command for workers
+      ansible.builtin.copy:
+        dest: /tmp/worker_join.sh
+        content: "{{ worker_join.stdout }}"
+        owner: ec2-user
+        group: ec2-user
+        mode: '0700'
+
+    - name: Add short sleep for stability
+      ansible.builtin.pause:
+        seconds: 15
+
+- hosts: master2
+  become: yes
+  tasks:
+    - name: Check admin conf
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: admin_conf
+
+    - name: Check 6443 port
+      ansible.builtin.shell: "ss -lptn | grep :6443 || true"
+      register: port_status
+
+    - name: Fail if master already initialized
+      ansible.builtin.fail:
+        msg: "master initialized"
+      when: admin_conf.stat.exists
+
+    - name: Fail if port 6443 already in use
+      ansible.builtin.fail:
+        msg: "port is alreadty in use"
+      when: port_status.stdout != ''
+
+    - name: Fetch control-plane join command from master1
+      ansible.builtin.shell: >
+        ssh -i /home/ec2-user/aws-new -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ec2-user@{{ hostvars['master1'].ansible_host }} 'cat /tmp/master_join.sh'
+      register: master_join
+      become: yes
+
+    - name: Run control-plane join
+      ansible.builtin.shell: "{{ master_join.stdout }} --apiserver-advertise-address {{ ansible_host }} --v=5"
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Wait for kube-apiserver port 6443 to be available
+      ansible.builtin.wait_for:
+        port: 6443
+        host: "{{ ansible_host }}"
+        delay: 10
+        timeout: 180
+
+    - name: Wait for /etc/kubernetes/admin.conf to exist
+      ansible.builtin.wait_for:
+        path: /etc/kubernetes/admin.conf
+        state: present
+        delay: 5
+        timeout: 60
+
+    - name: Create .kube directory for ec2-user
+      ansible.builtin.file:
+        path: /home/ec2-user/.kube
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: 0700
+
+    - name: Copy kubeadmin config to ec2-user
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/ec2-user/.kube/config
+        owner: ec2-user
+        group: ec2-user
+        mode: 0600
+        remote_src: yes
+      become: yes
+
+    - name: Wait until api-server on master1 reachable from master2
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['master1']['ansible_host'] }}"
+        port: 6443
+        timeout: 180
+        state: started  
+    
+    - name: Set real node name fact
+      set_fact:
+        kube_node_name: "ip-{{ ansible_host | replace('.', '-') }}.ec2.internal"
+
+    - name: Validate node bootstrap - check NotReady/Ready status
+      ansible.builtin.shell: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes {{ kube_node_name }} --output json | grep -E '"Ready".*true'
+      register: node_status
+      retries: 10
+      delay: 10
+      until: node_status.stdout.find('"Ready".*true') != -1
+      ignore_errors: yes
+
+    - name: Fail if master not Ready after retries
+      ansible.builtin.fail:
+        msg: "Node {{ kube_node_name }} is not Ready after join!"
+      when: node_status.stdout.find('"Ready".*true') == -1
+
+- hosts: workers
+  become: yes
+  tasks:
+    - name: Fetch worker join command from master1
+      ansible.builtin.shell: >
+        ssh -i /home/ec2-user/aws-new -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ec2-user@{{ hostvars['master1'].ansible_host }} 'cat /tmp/worker_join.sh'
+      register: join_cmd
+      become: yes
+
+    - name: Join the node to cluster
+      ansible.builtin.shell: "{{ join_cmd.stdout }} --v=5"
+      args:
+        creates: /etc/kubernetes/kubelet.conf

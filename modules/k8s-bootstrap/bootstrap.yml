@@ -1,0 +1,361 @@
+---
+- hosts: all
+  become: yes
+  vars:
+    kube_user: "ubuntu"
+    kubernetes_apt_key_url: https://pkgs.k8s.io/core:/stable:/v1.35/deb/Release.key
+    kubernetes_apt_key_file: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    kubernetes_apt_repo: 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.35/deb/ /'
+    k8s_cni_version: v1.4.0
+    pause_image: registry.k8s.io/pause:3.10.1
+
+  tasks:
+
+    - name: Basic OS preparation
+      apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - apt-transport-https
+          - python3
+          - netcat-openbsd
+          - dos2unix
+          - awscli
+        update_cache: yes
+        state: present
+
+    - name: Copy SSH private key to node
+      ansible.builtin.copy:
+        src: ~/.ssh/id_ed25519
+        dest: /home/{{ kube_user }}/aws-new
+        owner: "{{ kube_user }}"
+        group: "{{ kube_user }}"
+        mode: '0600'
+      when: inventory_hostname != "bastion"    
+
+    - name: Disable swap for Kubernetes
+      shell: |
+        swapoff -a
+        sed -i '/ swap / s/^\(.*\)$/#\1/' /etc/fstab
+
+    - name: Ensure br_netfilter and overlay modules are loaded
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - br_netfilter
+        - overlay
+
+    - name: Ensure kernel params for Kubernetes networking
+      sysctl:
+        name: "{{ item }}"
+        value: '1'
+        sysctl_set: yes
+        state: present
+        reload: yes
+      loop:
+        - net.bridge.bridge-nf-call-iptables
+        - net.ipv4.ip_forward
+
+    - name: Setup /etc/apt/keyrings for k8s repo
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Download and install Kubernetes GPG key (v1.35+)
+      shell: curl -fsSL {{ kubernetes_apt_key_url }} | gpg --dearmor -o {{ kubernetes_apt_key_file }}
+      args:
+        creates: "{{ kubernetes_apt_key_file }}"
+
+    - name: Setup Kubernetes apt repository
+      shell: echo "{{ kubernetes_apt_repo }}" > /etc/apt/sources.list.d/kubernetes.list
+      args:
+        creates: /etc/apt/sources.list.d/kubernetes.list
+
+    - name: Update apt after k8s repo
+      apt:
+        update_cache: yes
+
+    - name: Install kubeadm, kubelet, kubectl
+      apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: latest
+
+    - name: Hold kubeadm, kubelet, kubectl
+      shell: |
+        apt-mark hold kubelet kubeadm kubectl
+
+    - name: Install containerd and CNI deps
+      apt:
+        name:
+          - containerd
+        state: latest
+
+    - name: Generate containerd config.toml (with systemd cgroup)
+      shell: |
+        mkdir -p /etc/containerd
+        containerd config default > /etc/containerd/config.toml
+        sed -i 's/^\(\s*SystemdCgroup = \).*$/\1true/' /etc/containerd/config.toml
+        sed -i 's#sandbox_image = ".*"#sandbox_image = "{{ pause_image }}"#' /etc/containerd/config.toml
+
+    - name: Ensure /usr/lib/cni exists
+      file:
+        path: /usr/lib/cni
+        state: directory
+        mode: '0755'
+
+    - name: Download CNI plugins
+      get_url:
+        url: "https://github.com/containernetworking/plugins/releases/download/{{ k8s_cni_version }}/cni-plugins-linux-amd64-{{ k8s_cni_version }}.tgz"
+        dest: /tmp/cni-plugins.tgz
+        mode: '0644'
+        force: yes
+
+    - name: Unpack CNI plugins
+      unarchive:
+        src: /tmp/cni-plugins.tgz
+        dest: /usr/lib/cni
+        remote_src: yes
+
+    - name: Enable and restart containerd
+      systemd:
+        name: containerd
+        enabled: true
+        state: restarted
+
+    - name: Ensure kubelet is enabled and started
+      systemd:
+        name: kubelet
+        enabled: true
+        state: started
+
+    - name: Wait for containerd socket
+      wait_for:
+        path: /run/containerd/containerd.sock
+        state: present
+        delay: 2
+        timeout: 30
+
+    - name: Print ready message
+      debug:
+        msg: "System, containerd and Kubernetes binaries ready. Now run 'kubeadm init ...' on control-plane and join workers."
+
+- hosts: master1
+  become: yes
+  vars:
+    kube_user: "ubuntu"
+    pod_cidr: "192.168.0.0/16"
+  tasks:
+    - name: kubeadm init
+      shell: |
+        kubeadm init --pod-network-cidr={{ pod_cidr }} --control-plane-endpoint="{{ ansible_host }}:6443" --apiserver-advertise-address="{{ ansible_host }}" --upload-certs
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: copy kubeconfig
+      shell: |
+        mkdir -p /home/{{ kube_user }}/.kube
+        cp /etc/kubernetes/admin.conf /home/{{ kube_user }}/.kube/config
+        chown {{ kube_user }}:{{ kube_user }} /home/{{ kube_user }}/.kube/config
+
+    - name: Deploy Calico CNI
+      become_user: "{{ kube_user }}"
+      environment:
+        KUBECONFIG: /home/{{ kube_user }}/.kube/config
+      shell: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+
+    - name: wait until apiserver is ready
+      shell: kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes
+      register: result
+      retries: 20
+      delay: 6
+      until: result.rc == 0
+
+    - name: Wait for kube-system pods
+      shell: kubectl --kubeconfig /etc/kubernetes/admin.conf get pods -n kube-system --no-headers | grep -v "Running\|Completed" || true
+      register: pod_status
+      retries: 30
+      delay: 10
+      until: pod_status.stdout == ""
+      changed_when: false
+      failed_when: false
+
+    - name: get upload-certs key
+      shell: kubeadm init phase upload-certs --upload-certs | tail -1
+      register: cert_key
+
+    - name: Get join command for HA master
+      shell: kubeadm token create --print-join-command --certificate-key {{ cert_key.stdout }} | grep -- '--control-plane'
+      register: master_join
+
+    - name: Get join for workers
+      shell: kubeadm token create --print-join-command
+      register: worker_join
+      retries: 10
+      delay: 12
+      until: worker_join.rc == 0
+
+    - name: Save join script for master2 (HA join)
+      copy:
+        dest: /tmp/master_join.sh
+        content: "{{ master_join.stdout }}"
+        owner: "{{ kube_user }}"
+        group: "{{ kube_user }}"
+        mode: '0700'
+
+    - name: Save join script for workers
+      copy:
+        dest: /tmp/worker_join.sh
+        content: "{{ worker_join.stdout }}"
+        owner: "{{ kube_user }}"
+        group: "{{ kube_user }}"
+        mode: '0700'    
+
+    - name: Save join scripts on disk
+      copy:
+        dest: /tmp/worker_join.sh
+        content: "{{ worker_join.stdout }}"
+        owner: "{{ kube_user }}"
+        group: "{{ kube_user }}"
+        mode: '0700'
+
+    - name: Install Argo CD in cluster (kubectl apply)
+      become_user: "{{ kube_user }}"
+      environment:
+        KUBECONFIG: /home/{{ kube_user }}/.kube/config
+      shell: |
+        kubectl create namespace argocd || true
+        kubectl apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+      args:
+        creates: /home/{{ kube_user }}/argocd_installed.flag
+
+    - name: Convert argocd to NodePort
+      become_user: "{{ kube_user }}"
+      shell: |
+        kubectl patch svc argocd-server -n argocd -p '{"spec":{"type":"NodePort", "ports":[{"port":80,"targetPort":8080,"nodePort":32012},{"port":443,"targetPort":8080,"nodePort":30282}]}}'
+
+    - name: Install Helm
+      become_user: "{{ kube_user }}"
+      shell: |
+        curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+
+    - name: Flag Argo CD installed
+      file:
+        path: /home/{{ kube_user }}/argocd_installed.flag
+        state: touch
+        owner: "{{ kube_user }}"
+        group: "{{ kube_user }}"
+        mode: '0644'    
+
+    - name: Debug print-command
+      debug:
+        msg: |
+          Worker join: {{ worker_join.stdout }}
+          Master join: {{ master_join.stdout }}
+
+- hosts: master2
+  become: yes
+  vars:
+    kube_user: "ubuntu"
+  tasks:
+    - stat:
+        path: /etc/kubernetes/admin.conf
+      register: admin_conf
+
+    - fail:
+        msg: "This master is already initialized"
+      when: admin_conf.stat.exists
+
+    - name: Get join-command for master2 via SSH for master1
+      shell: >
+        ssh -i /home/{{ kube_user }}/aws-new -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no {{ kube_user }}@{{ hostvars['master1'].ansible_host }} 'cat /tmp/master_join.sh'
+      register: master_join
+
+    - name: Save master join command locally
+      copy:
+        dest: /tmp/master_join.sh
+        content: "{{ master_join.stdout }}"
+        owner: "{{ kube_user }}"
+        group: "{{ kube_user }}"
+        mode: '0700'
+
+    - name: Apply join on master2
+      shell: "{{ master_join.stdout }} --apiserver-advertise-address {{ ansible_host }} --v=5"
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Check kube-apiserver
+      wait_for:
+        port: 6443
+        host: "{{ ansible_host }}"
+        delay: 10
+        timeout: 180
+
+    - name: Check kubeconfig file 
+      wait_for:
+        path: /etc/kubernetes/admin.conf
+        state: present
+        delay: 5
+        timeout: 60
+
+    - name: Create .kube
+      file:
+        path: "/home/{{ kube_user }}/.kube"
+        state: directory
+        owner: "{{ kube_user }}"
+        group: "{{ kube_user }}"
+        mode: 0700
+
+    - name: copy kubeconfig for user
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "/home/{{ kube_user }}/.kube/config"
+        owner: "{{ kube_user }}"
+        group: "{{ kube_user }}"
+        mode: 0600
+        remote_src: yes
+
+    - name: Wait for kube-system pods
+      shell: kubectl --kubeconfig /etc/kubernetes/admin.conf get pods -n kube-system --no-headers | grep -v "Running\|Completed" || true
+      register: pod_status
+      retries: 30
+      delay: 10
+      until: pod_status.stdout == ""
+      changed_when: false
+      failed_when: false
+
+- hosts: workers
+  become: yes
+  vars:
+    kube_user: "ubuntu"
+  tasks:
+    - stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf
+
+    - fail:
+        msg: "This worker is already joined"
+      when: kubelet_conf.stat.exists
+
+    - name: Get join for workers via SSH from master1
+      shell: >
+        ssh -i /home/{{ kube_user }}/aws-new -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no {{ kube_user }}@{{ hostvars['master1'].ansible_host }} 'cat /tmp/worker_join.sh'
+      register: join_cmd
+
+    - name: join workers
+      shell: "{{ join_cmd.stdout }} --v=5"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+
+    - name: check kubelet.conf 
+      wait_for:
+        path: /etc/kubernetes/kubelet.conf
+        state: present
+        delay: 5
+        timeout: 60

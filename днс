@@ -1,0 +1,106 @@
+#DNS#
+data "aws_route53_zone" "main" {
+  name = "argocd.click."
+}
+
+resource "aws_route53_record" "argocd_east" {
+  depends_on = [module.load_balancer_us_east, null_resource.ansible_apply]
+  zone_id    = data.aws_route53_zone.main.zone_id
+  name       = "argocd"
+  type       = "A"
+
+  alias {
+    name                   = module.load_balancer_us_east.dns_name
+    zone_id                = module.load_balancer_us_east.zone_id
+    evaluate_target_health = true
+  }
+
+  set_identifier = "us-east-1"
+  latency_routing_policy {
+    region = "us-east-1"
+  }
+}
+
+resource "aws_route53_record" "argocd_west" {
+  depends_on = [module.load_balancer_eu_west, 
+  null_resource.ansible_apply, ]
+  zone_id    = data.aws_route53_zone.main.zone_id
+  name       = "argocd"
+  type       = "A"
+
+  alias {
+    name                   = module.load_balancer_eu_west.dns_name
+    zone_id                = module.load_balancer_eu_west.zone_id
+    evaluate_target_health = true
+  }
+
+  set_identifier = "eu-west-1"
+  latency_routing_policy {
+    region = "eu-west-1"
+  }
+}
+
+resource "aws_acm_certificate" "argocd_us_east" {
+  provider          = aws.us-east
+  domain_name       = "argocd.click"
+  validation_method = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_acm_certificate" "argocd_eu_west" {
+  provider          = aws.eu-west
+  domain_name       = "argocd.click"
+  validation_method = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_route53_record" "argocd_us_east_validation" {
+  for_each = {
+    for dvo in aws_acm_certificate.argocd_us_east.domain_validation_options :
+    dvo.domain_name => {
+      name   = dvo.resource_record_name
+      type   = dvo.resource_record_type
+      record = dvo.resource_record_value
+    }
+  }
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = each.value.name
+  type    = each.value.type
+  records = [each.value.record]
+  ttl     = 300
+}
+
+resource "aws_route53_record" "argocd_eu_west_validation" {
+  for_each = {
+    for dvo in aws_acm_certificate.argocd_eu_west.domain_validation_options :
+    dvo.domain_name => {
+      name   = dvo.resource_record_name
+      type   = dvo.resource_record_type
+      record = dvo.resource_record_value
+    }
+  }
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = each.value.name
+  type    = each.value.type
+  records = [each.value.record]
+  ttl     = 300
+}
+
+resource "aws_acm_certificate_validation" "argocd_us_east" {
+  provider                 = aws.us-east
+  certificate_arn          = aws_acm_certificate.argocd_us_east.arn
+  validation_record_fqdns  = [for record in aws_route53_record.argocd_us_east_validation : record.fqdn]
+}
+
+resource "aws_acm_certificate_validation" "argocd_eu_west" {
+  provider                 = aws.eu-west
+  certificate_arn          = aws_acm_certificate.argocd_eu_west.arn
+  validation_record_fqdns  = [for record in aws_route53_record.argocd_eu_west_validation : record.fqdn]
+}
+#DNS#

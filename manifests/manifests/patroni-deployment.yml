@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: patroni
+spec:
+  serviceName: patroni
+  replicas: 2
+  selector:
+    matchLabels:
+      app: patroni
+  template:
+    metadata:
+      labels:
+        app: patroni
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: 2011k8s-master1
+      tolerations:
+        - key: "node-role.kubernetes.io/control-plane"
+          effect: "NoSchedule"
+          operator: "Exists"
+      initContainers:
+        - name: envsubst-patroni
+          image: dibi/envsubst:latest
+          command: ["/bin/sh", "-c", "envsubst < /tmp/patroni.yaml.tmpl > /workdir/patroni.yaml" ]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          volumeMounts:
+            - name: patroni-config-tmpl
+              mountPath: /tmp/patroni.yaml.tmpl
+              subPath: patroni.yaml
+            - name: patroni-config-final
+              mountPath: /workdir 
+          securityContext:
+            runAsUser: 0
+        - name: fix-perms
+          image: lebonkdoge/mntr:db-latest
+          command:
+            [
+              "sh",
+              "-c",
+              "chown -R postgres:postgres /var/lib/postgresql/data && chown -R postgres:postgres /etc/kubernetes/pki/ && mkdir -p /run/postgresql && chown postgres:postgres /run/postgresql"
+            ]
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+            - name: etcd-certs
+              mountPath: /etc/kubernetes/pki
+            - name: run-postgresql
+              mountPath: /run/postgresql
+          securityContext:
+            runAsUser: 0
+      containers:
+        - name: patroni
+          image: lebonkdoge/mntr:db-latest
+          ports:
+            - containerPort: 5432
+              name: postgres
+            - containerPort: 8008
+              name: api
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+            - name: patroni-config-final
+              mountPath: /etc/patroni.yaml
+              subPath: patroni.yaml
+            - name: etcd-certs
+              mountPath: /etc/kubernetes/pki/
+            - name: run-postgresql
+              mountPath: /run/postgresql
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+      volumes:
+        - name: patroni-config-tmpl
+          configMap:
+            name: patroni-config
+        - name: patroni-config-final
+          emptyDir: {}
+        - name: etcd-certs
+          hostPath:
+            path: /etc/kubernetes/pki/
+            type: Directory
+        - name: run-postgresql
+          emptyDir: {}  
+  volumeClaimTemplates:
+    - metadata:
+        name: pgdata
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 1Gi
+        storageClassName: hostpath
+        

@@ -1,0 +1,35 @@
+replicaCount: 2
+
+image:
+  repository: lebonkdoge/mntr
+  tag: db-latest
+  pullPolicy: IfNotPresent
+
+env:
+  superuser_password: password
+  replicator_password: replpassword
+
+storage:
+  size: 1Gi
+  class: hostpath
+  volumes:
+    - name: db-pv-patroni-0
+      path: /mnt/pv/db0
+    - name: db-pv-patroni-1
+      path: /mnt/pv/db1
+
+etcd:
+  hosts:
+    - 10.0.20.11:2379
+    - 10.0.20.10:2379
+  protocol: https
+  cacert: /etc/kubernetes/pki/etcd/ca.crt
+  cert: /etc/kubernetes/pki/etcd/server.crt
+  key: /etc/kubernetes/pki/etcd/server.key
+
+nodeSelector: {}
+tolerations: []
+
+service:
+  masterName: patroni-master
+  headlessName: patroni

@@ -1,0 +1,25 @@
+replicaCount: 1
+
+image:
+  repository: lebonkdoge/mntr
+  tag: frontend-latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: frontend.local
+      paths:
+        - /
+  tls: []
+
+config:
+  backendHost: backend
+  backendPort: 8080
+
+resources: {}

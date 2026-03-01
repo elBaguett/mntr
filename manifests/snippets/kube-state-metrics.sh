@@ -1,0 +1,1 @@
+kubectl apply -f https://github.com/kubernetes/kube-state-metrics/blob/master/examples/standard/deployment.yaml

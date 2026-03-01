@@ -1,0 +1,2 @@
+export ETCDCTL_API=3
+etcdctl --endpoints=https://10.0.20.10:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key del /service/pg-cluster --prefix

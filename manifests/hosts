@@ -1,0 +1,33 @@
+Host debianrouter
+    HostName 192.168.0.103
+    User adminuser
+
+Host 2011k8s-master1
+    HostName 10.0.20.11
+    User adminuser
+    ProxyJump debianrouter
+
+Host 2010k8s-master2
+    HostName 10.0.20.10
+    User adminuser
+    ProxyJump debianrouter
+
+Host 114stateless-worker1
+    HostName 10.0.1.14
+    User adminuser
+    ProxyJump debianrouter
+
+Host 112stateless-worker2
+    HostName 10.0.1.12
+    User adminuser
+    ProxyJump debianrouter
+
+Host 111stateful-worker1
+    HostName 10.0.1.11
+    User adminuser
+    ProxyJump debianrouter
+
+Host 110stateful-worker2
+    HostName 10.0.1.10
+    User adminuser
+    ProxyJump debianrouter

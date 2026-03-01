@@ -1,0 +1,11 @@
+**\acc
+**\mail_secret.yml
+**\terraform.tfstate
+**\terraform.tfstate.backup
+**\.terraform**
+**\.terraform\modules
+**\.terraform\providers
+**\.terraform.lock.hcl
+**\ansible_hosts.ini
+**\other_ansible_hosts.ini
+**\venv

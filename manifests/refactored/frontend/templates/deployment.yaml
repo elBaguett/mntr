@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "frontend.fullname" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "frontend.name" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "frontend.name" . }}
+    spec:
+      containers:
+        - name: {{ include "frontend.name" . }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          ports:
+            - containerPort: {{ .Values.service.port }}
+          volumeMounts:
+            - mountPath: /etc/angie/angie.conf
+              name: default-conf
+              subPath: default.conf
+          livenessProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.service.port }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.service.port }}
+      volumes:
+        - name: default-conf
+          configMap:
+            name: {{ include "frontend.fullname" . }}-conf

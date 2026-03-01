@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: imap
+  template:
+    metadata:
+      labels:
+        app: imap
+    spec:
+      containers:
+        - name: imap
+          image: dovecot/dovecot
+          ports:
+            - containerPort: 143
+          volumeMounts:
+            - mountPath: /var/mail
+              name: maildata
+      volumes:
+        - name: maildata
+          persistentVolumeClaim:
+            claimName: maildata-pvc

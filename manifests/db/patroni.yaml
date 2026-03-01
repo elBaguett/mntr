@@ -1,0 +1,37 @@
+scope: my_cluster_name
+namespace: /service/patroni/
+name: node1
+
+restapi:
+  listen: 0.0.0.0:8008
+  authentication:
+    username: patroni
+    password: my_restapi_password
+
+postgresql:
+  listen: 0.0.0.0:5432
+  connect_address: 192.168.1.10:5432 
+  data_dir: /var/lib/postgresql/data
+  parameters:
+    max_connections: 100
+    shared_buffers: 128MB
+    wal_level: replica
+    hot_standby: on
+    archive_mode: on
+    archive_command: 'cp %p /var/lib/postgresql/archive/%f' 
+  pg_hba:
+    - host all all 0.0.0.0/0 md5
+  recovery_conf:
+    restore_command: 'cp /var/lib/postgresql/archive/%f %p' 
+
+replication:
+  replication_slots: true
+  synchronous_mode: false
+  synchronous_commit: local
+
+etcd:
+  hosts:
+    - 10.0.20.10:2379
+    - 10.0.20.11:2379 
+  ttl: 30
+  retry_timeout: 10

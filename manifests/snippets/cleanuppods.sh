@@ -1,0 +1,1 @@
+kubectl get pods -n mntr --no-headers | awk '$3 != "Running" {print $1}' | xargs -r kubectl delete pod -n mntr

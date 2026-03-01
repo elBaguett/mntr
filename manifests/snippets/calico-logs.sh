@@ -1,0 +1,1 @@
+kubectl logs -n kube-system -l k8s-app=calico-node | grep -Ei 'fail|error|denied|drop|block|reject'

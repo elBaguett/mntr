@@ -1,0 +1,155 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: mntr  
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.52.0
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: prometheus-config
+              mountPath: /etc/prometheus/
+      volumes:
+        - name: prometheus-config
+          configMap:
+            name: prometheus-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: mntr
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ['alertmanager.mntr.svc.cluster.local:9093']
+    rule_files:
+      - /etc/prometheus/alert.rules.yaml  
+    scrape_configs:
+      - job_name: 'kubernetes-nodes'
+        scheme: https
+        tls_config:
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token  
+        kubernetes_sd_configs:
+          - role: node
+        metrics_path: /metrics
+      - job_name: 'kubernetes-pods'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: $1
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: (.+):(?:\d+);(\d+)
+            replacement: $1:$2
+            target_label: __address__
+      - job_name: "node-exporter"
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: node-exporter
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: $1:9100
+      - job_name: 'kube-state-metrics'
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names: [kube-system]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_service_name]
+            action: keep
+            regex: kube-state-metrics
+          - source_labels: [__meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: http-metrics            
+      - job_name: 'demo'
+        static_configs:
+          - targets: ['localhost:9090']    
+  alert.rules.yaml: |
+    groups:
+      - name: basic-alerts
+        rules:
+          - alert: 'InstanceDown'
+            expr: up == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Instance {{ $labels.instance }} down"
+              description: "{{ $labels.instance }} has been down for more than 1 minute."
+          - alert: HighCpuUsage
+            expr: 100 * (1 - avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 90
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Instance {{ $labels.instance }} high CPU usage"
+              description: "CPU usage is > 90% for more than 2 minutes"
+          - alert: HighMemoryUsage
+            expr: node_memory_Active_bytes / node_memory_MemTotal_bytes > 0.9
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Instance {{ $labels.instance }} high memory usage"
+              description: "Memory usage is > 90% for more than 2 minutes"
+          - alert: HighHttpErrorRate
+            expr: sum(rate(http_requests_total{status=~"5.."}[5m])) BY (job) > 2
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High HTTP 5xx error rate"
+              description: "Job {{ $labels.job }} has high HTTP 5xx error rate"
+          - alert: HighLatency
+            expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job)) > 0.5
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High Latency detected"
+              description: "95th percentile latency for job {{ $labels.job }} > 0.5s"    
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: mntr
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - protocol: TCP
+      port: 9090
+      targetPort: 9090
+  type: NodePort

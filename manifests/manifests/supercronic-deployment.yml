@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: supercronic-fix-perms
+  labels:
+    app: supercronic-fix-perms
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: supercronic-fix-perms
+  template:
+    metadata:
+      labels:
+        app: supercronic-fix-perms
+    spec:
+      securityContext:
+        runAsUser: 0
+      nodeSelector:
+        kubernetes.io/hostname: 2011k8s-master1
+      tolerations:
+        - key: "node-role.kubernetes.io/control-plane"
+          effect: "NoSchedule"
+          operator: "Exists"
+      containers:
+      - name: supercronic-fix-perms
+        image: cbtcr/supercronic:0.2.25-alpine3.18
+        command: ["supercronic"]
+        args: ["/etc/crontabs/root"]
+        volumeMounts:
+        - name: etcd-certs
+          mountPath: /etc/kubernetes/pki
+        - name: fix-keys-cron
+          mountPath: /etc/crontabs
+      volumes:
+      - name: etcd-certs
+        hostPath:
+          path: /etc/kubernetes/pki/
+          type: Directory
+      - name: fix-keys-cron
+        configMap:
+          name: fix-keys-cron

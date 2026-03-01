@@ -1,0 +1,17 @@
+apiVersion: crd.projectcalico.org/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-nodeports-ingress
+  namespace: kube-system
+spec:
+  selector: all()
+  ingress:
+    - action: Allow
+      protocol: TCP
+      destination:
+        ports: [30724]
+  egress:
+    - action: Allow
+  types:
+    - Ingress
+    - Egress

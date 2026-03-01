@@ -1,0 +1,58 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: testdb
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile.backend
+    environment:
+      - DB_HOST=db
+      - DB_USER=user
+      - DB_PASSWORD=password
+      - DB_NAME=testdb
+    depends_on:
+      - db
+
+  frontend:
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+    volumes:
+      - ./frontend/default.conf:/etc/angie/angie.conf:ro
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+  smtp:
+    image: juanluisbaptiste/postfix:latest
+    volumes:
+      - maildata:/var/mail
+    environment:
+      - maildomain=localhost
+      - smtp_user=test:secretpassword
+      - SMTP_SERVER=smtp.gmail.com  
+      - SMTP_USERNAME=test
+      - SMTP_PASSWORD=secretpassword
+      - SERVER_HOSTNAME=localhost
+    ports:
+      - "2525:25"
+  imap:
+    image: dovecot/dovecot
+    volumes:
+      - maildata:/var/mail
+    ports:
+      - "1143:143"    
+
+volumes:
+  db_data:
+  maildata:

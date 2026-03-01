@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: smtp-test
+  namespace: mntr
+spec:
+  containers:
+    - name: smtp
+      image: boky/postfix:edge-debian
+      ports:
+        - containerPort: 25
+      env:
+        - name: maildomain
+          value: localhost
+        - name: smtp_user
+          value: "test:secretpassword"
+        - name: SMTP_SERVER
+          value: smtp.gmail.com
+        - name: SMTP_USERNAME
+          value: test@gmail.com
+        - name: SMTP_PASSWORD
+          value: secretpassword
+        - name: SERVER_HOSTNAME
+          value: smtp-test
+        - name: ALLOW_EMPTY_SENDER_DOMAINS
+          value: "true"
+      volumeMounts:
+        - name: maildata
+          mountPath: /var/mail    
+  volumes:
+    - name: postfix-sasl-dir
+      emptyDir: {}
+    - name: maildata
+      persistentVolumeClaim:
+        claimName: maildata-pvc        

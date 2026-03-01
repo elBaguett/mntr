@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "frontend.fullname" . }}-conf
+data:
+  default.conf: |
+    events {}
+    http {
+        server {
+            listen {{ .Values.service.port }};
+            location / {
+                proxy_pass http://{{ .Values.config.backendHost }}:{{ .Values.config.backendPort }}/;
+            }
+        }
+    }

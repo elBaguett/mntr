@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smtp
+  namespace: mntr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: smtp
+  template:
+    metadata:
+      labels:
+        app: smtp
+    spec:
+      initContainers:
+        - name: postmap
+          image: boky/postfix:edge-debian
+          command:
+            - "/bin/sh"
+            - "-c"
+            - "cp /etc/secret/sasl_passwd /etc/postfix/sasl/sasl_passwd && postmap /etc/postfix/sasl/sasl_passwd"
+          volumeMounts:
+            - name: postfix-sasl-secret
+              mountPath: /etc/secret/
+            - name: postfix-sasl-dir
+              mountPath: /etc/postfix/sasl
+      containers:
+        - name: smtp
+          image: boky/postfix:edge-debian
+          ports:
+            - containerPort: 25
+          env:
+            - name: maildomain
+              value: localhost
+            - name: smtp_user
+              value: "test:secretpassword"
+            - name: SMTP_SERVER
+              value: smtp.gmail.com
+            - name: SMTP_USERNAME
+              value: test@gmail.com
+            - name: SMTP_PASSWORD
+              value: secretpassword
+            - name: SERVER_HOSTNAME
+              value: smtp-prod
+            - name: ALLOW_EMPTY_SENDER_DOMAINS
+              value: "true"
+          volumeMounts:
+            - name: maildata
+              mountPath: /var/mail
+            - name: postfix-config
+              mountPath: /etc/postfix/main.cf
+              subPath: main.cf
+            - name: postfix-master-config
+              mountPath: /etc/postfix/master.cf
+              subPath: master.cf
+            - name: postfix-aliases
+              mountPath: /etc/aliases
+              subPath: aliases
+            - name: postfix-sasl-dir
+              mountPath: /etc/postfix/sasl
+          command: ["postfix", "start-fg"]
+      volumes:
+        - name: postfix-sasl-dir
+          emptyDir: {}
+        - name: maildata
+          persistentVolumeClaim:
+            claimName: maildata-pvc
+        - name: postfix-config
+          configMap:
+            name: postfix-config
+            items:
+              - key: main.cf
+                path: main.cf
+        - name: postfix-master-config
+          configMap:
+            name: postfix-master-config
+            items:
+              - key: master.cf
+                path: master.cf
+        - name: postfix-sasl-secret
+          secret:
+            secretName: postfix-sasl-secret
+            items:
+              - key: sasl_passwd
+                path: sasl_passwd
+        - name: postfix-aliases
+          configMap:
+            name: postfix-aliases
+            items:
+              - key: aliases
+                path: aliases
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: maildata-pvc
+  namespace: mntr
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Mi
