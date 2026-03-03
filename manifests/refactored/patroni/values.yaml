@@ -27,10 +27,10 @@ etcd:
   cert: /etc/kubernetes/pki/etcd/server.crt
   key: /etc/kubernetes/pki/etcd/server.key
 
-etcdCerts:
-  ca: ""
-  cert: ""
-  key: ""
+#etcdCerts:
+#  ca: ""
+#  cert: ""
+#  key: ""
 
 etcdCertsSecretName: etcd-certs
 
