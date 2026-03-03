@@ -67,7 +67,7 @@ spec:
               mountPath: /etc/patroni.yaml
               subPath: patroni.yaml
             - name: etcd-certs
-              mountPath: /etc/kubernetes/pki/
+              mountPath: /etc/kubernetes/pki/etcd
             - name: run-postgresql
               mountPath: /run/postgresql
           env:
