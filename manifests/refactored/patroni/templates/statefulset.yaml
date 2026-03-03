@@ -43,13 +43,11 @@ spec:
             [
               "sh",
               "-c",
-              "chown -R postgres:postgres /var/lib/postgresql/data && chown -R postgres:postgres /etc/kubernetes/pki/ && mkdir -p /run/postgresql && chown postgres:postgres /run/postgresql"
+              "chown -R postgres:postgres /var/lib/postgresql/data && mkdir -p /run/postgresql && chown postgres:postgres /run/postgresql"
             ]
           volumeMounts:
             - name: pgdata
               mountPath: /var/lib/postgresql/data
-            - name: etcd-certs
-              mountPath: /etc/kubernetes/pki
             - name: run-postgresql
               mountPath: /run/postgresql
           securityContext:
