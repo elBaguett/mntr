@@ -84,9 +84,8 @@ spec:
         - name: patroni-config-final
           emptyDir: {}
         - name: etcd-certs
-          hostPath:
-            path: /etc/kubernetes/pki/
-            type: Directory
+          secret:
+            secretName: etcd-certs
         - name: run-postgresql
           emptyDir: {}
   volumeClaimTemplates:
