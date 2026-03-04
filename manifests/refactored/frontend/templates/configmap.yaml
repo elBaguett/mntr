@@ -9,7 +9,7 @@ data:
         server {
             listen {{ .Values.service.port }};
             location / {
-                proxy_pass http://{{ .Values.config.backendHost }}:{{ .Values.config.backendPort }}/;
+                proxy_pass http://{{ .Values.config.backendHost }}-{{ .Values.config.backendHost }}:{{ .Values.config.backendPort }}/;
             }
         }
     }
