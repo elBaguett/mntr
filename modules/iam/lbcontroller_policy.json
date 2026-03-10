@@ -70,7 +70,12 @@
 				"wafv2:DisassociateWebACL",
 				"tag:GetResources",
 				"tag:TagResources",
-				"tag:UntagResources"
+				"tag:UntagResources",
+				"logs:PutLogEvents",
+				"logs:DescribeLogStreams",
+				"logs:CreateLogStream",
+				"logs:DescribeLogGroups",
+				"logs:CreateLogGroup"
 			],
 			"Effect": "Allow",
 			"Resource": "*"

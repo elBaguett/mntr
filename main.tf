@@ -96,6 +96,18 @@ module "iam" {
   source = "./modules/iam"
 }
 
+module "logs" {
+  source     = "./modules/logs"
+  log_groups = [
+    "/k8s/nodes",
+    "/k8s/pods",
+    "/k8s/app/frontend",
+    "/k8s/app/backend",
+    "/k8s/app/db",
+    "/k8s/app/errors"
+  ]
+}
+
 #### VPC modules ####
 module "vpc_us_east" {
   source     = "./modules/vpc"
@@ -451,9 +463,9 @@ resource "null_resource" "copy_key_to_bastion" {
 }
 # resources are not being copied, you wanted to automate calicoctl and allow_all policy
 resource "null_resource" "copy_manifests" {
-  depends_on = [null_resource.copy_key_to_bastion]
+  depends_on = [null_resource.copy_key_to_bastion, module.master_eu_west]
   provisioner "local-exec" {
-    command = "scp -i ~/.ssh/id_ed25519 -o \"StrictHostKeyChecking=no\" -o \"UserKnownHostsFile=/dev/null\" -o ProxyCommand=\"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_ed25519 -W %h:%p ubuntu@${aws_eip.bastion.public_ip}\" -r ./manifests ubuntu@10.10.10.11:/home/ubuntu/code"
+    command = "scp -i ~/.ssh/id_ed25519 -o \"StrictHostKeyChecking=no\" -o \"UserKnownHostsFile=/dev/null\" -o ProxyCommand=\"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_ed25519 -W %h:%p ubuntu@${aws_eip.bastion.public_ip}\" -r ./manifests ubuntu@10.20.10.10:/home/ubuntu/code"
   }
 }
 
