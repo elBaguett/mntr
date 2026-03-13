@@ -1,0 +1,102 @@
+---
+- hosts: master2
+  become: yes
+  vars:
+    kube_user: "ubuntu"
+    home_dir: "/home/ubuntu"
+    kubeconfig: "/etc/kubernetes/admin.conf"
+    calicoctl_version: "v3.31.4"
+    calico_operator_version: "v3.29.0"
+    allow_policy: "{{ home_dir }}/code/calico/allow-all.yml"
+    aws_region: "{{ 'eu-west-1' if ansible_host is search('^10\\.20\\.') else 'us-east-1' }}"
+    log_group_tmpl: '/k8s/$kubernetes["namespace_name"]/$kubernetes["pod_name"]'
+
+  tasks:
+
+    - name: Download calicoctl binary
+      get_url:
+        url: "https://github.com/projectcalico/calico/releases/download/{{ calicoctl_version }}/calicoctl-linux-amd64"
+        dest: "{{ home_dir }}/calicoctl"
+        mode: '0755'
+        owner: "{{ kube_user }}"
+        group: "{{ kube_user }}"
+
+    - name: Install calicoctl system-wide
+      copy:
+        src: "{{ home_dir }}/calicoctl"
+        dest: /usr/local/bin/calicoctl
+        mode: '0755'
+        owner: root
+        group: root
+        remote_src: yes
+
+    - name: Create namespace mntr
+      command: kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace mntr
+
+    - name: Create secret etcd
+      command: sudo kubectl -n mntr --kubeconfig=/etc/kubernetes/admin.conf create secret generic etcd-certs --from-file=ca.crt=/etc/kubernetes/pki/etcd/ca.crt --from-file=server.crt=/etc/kubernetes/pki/etcd/server.crt --from-file=server.key=/etc/kubernetes/pki/etcd/server.key
+
+    - name: Apply Calico CRDs (root)
+      command: kubectl apply --kubeconfig=/etc/kubernetes/admin.conf -f https://docs.projectcalico.org/manifests/crds.yaml --kubeconfig={{ kubeconfig }}
+
+    - name: Apply Calico operator CRDs (root)
+      command: kubectl apply --kubeconfig=/etc/kubernetes/admin.conf --server-side --force-conflicts -f https://raw.githubusercontent.com/projectcalico/calico/{{ calico_operator_version }}/manifests/operator-crds.yaml --kubeconfig={{ kubeconfig }}
+
+    - name: Apply allow-all Calico policy
+      command: calicoctl apply -f {{ allow_policy }} --allow-version-mismatch
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      when: allow_policy is file
+
+    - name: Install Helm3 (user)
+      become_user: "{{ kube_user }}"
+      shell: curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+      args:
+        creates: "{{ home_dir }}/.local/bin/helm"
+
+    - name: Add ingress-nginx repository (user)
+      become_user: "{{ kube_user }}"
+      shell: helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx || true
+
+    - name: Update Helm repositories (user)
+      become_user: "{{ kube_user }}"
+      shell: helm repo update
+
+    - name: Deploy ingress-nginx via Helm (user)
+      become_user: "{{ kube_user }}"
+      shell: |
+        helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+          --namespace ingress-nginx --create-namespace
+
+    - name: Add aws-observability Helm repository (user)
+      become_user: "{{ kube_user }}"
+      shell: helm repo add aws-observability https://aws.github.io/eks-charts || true
+
+    - name: Update Helm repositories for fluent-bit (user)
+      become_user: "{{ kube_user }}"
+      shell: helm repo update
+
+    - name: Deploy Fluent Bit with region/log group template (user)
+      become_user: "{{ kube_user }}"
+      shell: |
+        helm upgrade --install fluent-bit aws-observability/aws-for-fluent-bit \
+          --namespace aws-observability --create-namespace \
+          --set cloudWatch.region={{ aws_region }} \
+          --set cloudWatch.logGroupName='{{ log_group_tmpl }}' \
+          --set cloudWatch.logStreamPrefix=from-fluent-bit-
+
+    - name: Wait for argocd-initial-admin-secret
+      shell: kubectl --kubeconfig=/etc/kubernetes/admin.conf -n argocd get secret argocd-initial-admin-secret --no-headers
+      register: argo_secret_ready
+      retries: 20
+      delay: 15
+      until: argo_secret_ready.rc == 0
+
+    - name: Show ArgoCD initial admin password
+      shell: kubectl --kubeconfig=/etc/kubernetes/admin.conf -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+      register: argocd_pw
+      changed_when: false
+      failed_when: false
+
+    - debug:
+        msg: "ArgoCD initial admin password: {{ argocd_pw.stdout | default('not found') }}"

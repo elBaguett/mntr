@@ -96,11 +96,19 @@ module "iam" {
   source = "./modules/iam"
 }
 
-module "logs" {
+module "logs_us_east" {
   source     = "./modules/logs"
+  providers  = { aws = aws.us-east }
   log_groups = [
     "/k8s/nodes",
-    "/k8s/pods",
+    "/k8s/pods"
+  ]
+}
+
+module "logs_eu_west" {
+  source     = "./modules/logs"
+  providers  = { aws = aws.eu-west }
+  log_groups = [
     "/k8s/app/frontend",
     "/k8s/app/backend",
     "/k8s/app/db",
@@ -472,9 +480,16 @@ resource "null_resource" "copy_manifests" {
 resource "null_resource" "ansible_apply" {
   depends_on = [local_file.ansible_inventory, null_resource.copy_manifests]
   provisioner "local-exec" {
-    command = "sleep 30 && ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i ./ansible_hosts.ini ./modules/k8s-bootstrap/bootstrap.yml --private-key=~/.ssh/id_ed25519"
+    command = "sleep 30 && ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i ./ansible_hosts.ini ./modules/k8s-bootstrap/bootstrap.yml --private-key=~/.ssh/id_ed25519 && sleep 30 && ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i ./ansible_hosts.ini ./modules/k8s-bootstrap/post-bootstrap.yml --private-key=~/.ssh/id_ed25519"
   }
 }
+
+#resource "null_resource" "ansible_post_bootstrap" {
+#  depends_on = [null_resource.ansible_apply, aws_route53_record.argocd_west, aws_route53_record.argocd_east]
+#  provisioner "local-exec" {
+#    command = "sleep 30 && ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i ./ansible_hosts.ini ./modules/k8s-bootstrap/post-bootstrap.yml --private-key=~/.ssh/id_ed25519"
+#  }
+#}
 
 #DNS#
 data "aws_route53_zone" "main" {
