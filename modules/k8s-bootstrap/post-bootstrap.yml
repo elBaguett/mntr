@@ -9,7 +9,7 @@
     calico_operator_version: "v3.29.0"
     allow_policy: "{{ home_dir }}/code/calico/allow-all.yml"
     aws_region: "{{ 'eu-west-1' if ansible_host is search('^10\\.20\\.') else 'us-east-1' }}"
-    log_group_tmpl: '/k8s/$kubernetes["namespace_name"]/$kubernetes["pod_name"]'
+    log_group_tmpl: "/k8s/app/\\$kubernetes['namespace_name']"
 
   tasks:
 
@@ -79,11 +79,9 @@
     - name: Deploy Fluent Bit with region/log group template (user)
       become_user: "{{ kube_user }}"
       shell: |
-        helm upgrade --install fluent-bit aws-observability/aws-for-fluent-bit \
+        helm upgrade --install fluent-bit fluent/fluent-bit \
           --namespace aws-observability --create-namespace \
-          --set cloudWatch.region={{ aws_region }} \
-          --set cloudWatch.logGroupName='{{ log_group_tmpl }}' \
-          --set cloudWatch.logStreamPrefix=from-fluent-bit-
+          -f {{ home_dir }}/code/logs/values.yaml
 
     - name: Wait for argocd-initial-admin-secret
       shell: kubectl --kubeconfig=/etc/kubernetes/admin.conf -n argocd get secret argocd-initial-admin-secret --no-headers
