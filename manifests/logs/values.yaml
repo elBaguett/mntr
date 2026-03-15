@@ -14,22 +14,58 @@ config:
   inputs: |
     [INPUT]
         Name tail
-        Path /var/log/containers/*.log
-        multiline.parser docker, cri
-        Tag kube.*
+        Tag patroni.*
+        Path /var/log/containers/patroni-*.log
+        Parser cri
         Mem_Buf_Limit 5MB
         Skip_Long_Lines On
+        Refresh_Interval 5
+
+    [INPUT]
+        Name tail
+        Tag frontend.*
+        Path /var/log/containers/frontend-*.log
+        Parser cri
+        Mem_Buf_Limit 5MB
+        Skip_Long_Lines On
+        Refresh_Interval 5
+
+    [INPUT]
+        Name tail
+        Tag backend.*
+        Path /var/log/containers/backend-*.log
+        Parser cri
+        Mem_Buf_Limit 5MB
+        Skip_Long_Lines On
+        Refresh_Interval 5
 
     [INPUT]
         Name systemd
         Tag host.*
         Systemd_Filter _SYSTEMD_UNIT=kubelet.service
         Read_From_Tail On
+        DB /fluent-bit/state/flb_systemd.db
 
   filters: |
     [FILTER]
         Name kubernetes
-        Match kube.*
+        Match patroni.*
+        Merge_Log On
+        Keep_Log Off
+        K8S-Logging.Parser On
+        K8S-Logging.Exclude On
+
+    [FILTER]
+        Name kubernetes
+        Match frontend.*
+        Merge_Log On
+        Keep_Log Off
+        K8S-Logging.Parser On
+        K8S-Logging.Exclude On
+
+    [FILTER]
+        Name kubernetes
+        Match backend.*
         Merge_Log On
         Keep_Log Off
         K8S-Logging.Parser On
@@ -38,13 +74,45 @@ config:
   outputs: |
     [OUTPUT]
         Name cloudwatch_logs
-        Match *
-        log_group_name /k8s/app/$kubernetes['namespace_name']
+        Match patroni.*
+        log_group_name /k8s/app/patroni
+        log_stream_prefix from-fluent-bit-
+        region eu-west-1
+        auto_create_group true
+
+    [OUTPUT]
+        Name cloudwatch_logs
+        Match frontend.*
+        log_group_name /k8s/app/frontend
+        log_stream_prefix from-fluent-bit-
+        region eu-west-1
+        auto_create_group true
+
+    [OUTPUT]
+        Name cloudwatch_logs
+        Match backend.*
+        log_group_name /k8s/app/backend
+        log_stream_prefix from-fluent-bit-
+        region eu-west-1
+        auto_create_group true
+
+    [OUTPUT]
+        Name cloudwatch_logs
+        Match host.*
+        log_group_name /k8s/infra/host
         log_stream_prefix from-fluent-bit-
         region eu-west-1
         auto_create_group true
 
 customParsers: |
-  [PARSER]
-      Name cri
-      Format cri
+    [PARSER]
+        Name cri
+        Format cri
+
+    [PARSER]
+        Name docker
+        Format json
+        Time_Key time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep On
+        Decode_Field_As escaped_utf8 log

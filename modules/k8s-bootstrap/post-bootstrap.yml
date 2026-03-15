@@ -70,7 +70,9 @@
 
     - name: Add aws-observability Helm repository (user)
       become_user: "{{ kube_user }}"
-      shell: helm repo add aws-observability https://aws.github.io/eks-charts || true
+      shell: |
+        helm repo add fluent https://fluent.github.io/helm-charts || true      
+        helm repo add aws-observability https://aws.github.io/eks-charts || true
 
     - name: Update Helm repositories for fluent-bit (user)
       become_user: "{{ kube_user }}"
@@ -80,8 +82,18 @@
       become_user: "{{ kube_user }}"
       shell: |
         helm upgrade --install fluent-bit fluent/fluent-bit \
-          --namespace aws-observability --create-namespace \
-          -f {{ home_dir }}/code/logs/values.yaml
+          --namespace aws-observability --create-namespace --version 0.56.0 \
+          -f {{ home_dir }}/code/logs/values.yaml || true      
+
+    - name: Create namespace for cwagent
+      command: kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace amazon-cloudwatch
+
+    - name: Create service acc for cwagent
+      shell: |
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f {{ home_dir }}/code/logs/sa.yaml || true  
+
+    - name: Apply cwagent
+      command: kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f https://raw.githubusercontent.com/aws-samples/amazon-cloudwatch-container-insights/refs/heads/main/k8s-deployment-manifest-templates/deployment-mode/daemonset/container-insights-monitoring/cwagent/cwagent-daemonset.yaml  
 
     - name: Wait for argocd-initial-admin-secret
       shell: kubectl --kubeconfig=/etc/kubernetes/admin.conf -n argocd get secret argocd-initial-admin-secret --no-headers

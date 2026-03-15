@@ -96,26 +96,6 @@ module "iam" {
   source = "./modules/iam"
 }
 
-module "logs_us_east" {
-  source     = "./modules/logs"
-  providers  = { aws = aws.us-east }
-  log_groups = [
-    "/k8s/nodes",
-    "/k8s/pods"
-  ]
-}
-
-module "logs_eu_west" {
-  source     = "./modules/logs"
-  providers  = { aws = aws.eu-west }
-  log_groups = [
-    "/k8s/app/frontend",
-    "/k8s/app/backend",
-    "/k8s/app/db",
-    "/k8s/app/errors"
-  ]
-}
-
 #### VPC modules ####
 module "vpc_us_east" {
   source     = "./modules/vpc"
@@ -469,6 +449,7 @@ resource "null_resource" "copy_key_to_bastion" {
     command = "sleep 60 && for i in {1..12}; do ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ubuntu@${aws_eip.bastion.public_ip} echo ok && break || sleep 5; done; scp -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ~/.ssh/id_ed25519 ubuntu@${aws_eip.bastion.public_ip}:/home/ubuntu/aws-new; ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ubuntu@${aws_eip.bastion.public_ip} 'chmod 600 /home/ubuntu/aws-new'"
   }
 }
+
 # resources are not being copied, you wanted to automate calicoctl and allow_all policy
 resource "null_resource" "copy_manifests" {
   depends_on = [null_resource.copy_key_to_bastion, module.master_eu_west]

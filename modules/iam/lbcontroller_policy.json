@@ -75,7 +75,11 @@
 				"logs:DescribeLogStreams",
 				"logs:CreateLogStream",
 				"logs:DescribeLogGroups",
-				"logs:CreateLogGroup"
+				"logs:CreateLogGroup",
+				"cloudwatch:PutMetricData",
+        		"cloudwatch:GetMetricData",
+        		"cloudwatch:GetMetricStatistics",
+        		"cloudwatch:ListMetrics"
 			],
 			"Effect": "Allow",
 			"Resource": "*"
