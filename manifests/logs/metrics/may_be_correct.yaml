@@ -1,0 +1,67 @@
+region: eu-west-1
+clusterName: mntr
+# Указываем, что это обычный K8s
+k8sMode: K8S
+
+containerLogs:
+  enabled: true
+  fluentBit:
+    image:
+      repository: public.ecr.aws/aws-observability/aws-for-fluent-bit
+      tag: 2.32.2
+    config:
+      service: |
+        [SERVICE]
+            Daemon    Off
+            Flush     1
+            Log_Level info
+            Parsers_File /fluent-bit/etc/parsers.conf
+            HTTP_Server   On
+            HTTP_Listen   0.0.0.0
+            HTTP_Port     2020
+            storage.path /var/fluent-bit/state
+        [FILTER]
+            Name                kubernetes
+            Match               kube.*
+            # Для self-managed используем стандартный внутренний DNS
+            Kube_URL            https://kubernetes.default.svc:443
+            tls.verify          Off
+            Merge_Log           On
+
+agent:
+  enabled: true
+  mode: daemonset
+  image:
+    repository: public.ecr.aws/cloudwatch-agent/cloudwatch-agent
+    tag: 1.303026.0
+  
+  # ПРЯМАЯ КОНФИГУРАЦИЯ (ADOT Mode) - самая стабильная для кастомных кластеров
+  config:
+    receivers:
+      awscontainerinsightreceiver:
+        # Ключевые настройки для self-managed:
+        cluster_name: "mntr"
+        endpoint: "https://$(HOST_IP):10250"
+        insecure_skip_verify: true
+        # Отключаем поиск метаданных EKS/ECS
+        add_full_pod_name_metric_label: true
+        add_container_name_metric_label: true
+        
+    exporters:
+      awsemf:
+        region: "eu-west-1"
+        log_group_name: "/aws/containerinsights/mntr/performance"
+        log_stream_name: "{NodeName}"
+        
+    service:
+      pipelines:
+        metrics:
+          receivers: [awscontainerinsightreceiver]
+          exporters: [awsemf]
+
+# Важно для работы внутри EC2 без EKS-аддонов
+kubeletConfig:
+  insecureSkipVerify: true
+
+prometheus:
+  enabled: false
