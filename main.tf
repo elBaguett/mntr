@@ -450,7 +450,6 @@ resource "null_resource" "copy_key_to_bastion" {
   }
 }
 
-# resources are not being copied, you wanted to automate calicoctl and allow_all policy
 resource "null_resource" "copy_manifests" {
   depends_on = [null_resource.copy_key_to_bastion, module.master_eu_west]
   provisioner "local-exec" {
@@ -464,13 +463,6 @@ resource "null_resource" "ansible_apply" {
     command = "sleep 30 && ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i ./ansible_hosts.ini ./modules/k8s-bootstrap/bootstrap.yml --private-key=~/.ssh/id_ed25519 && sleep 30 && ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i ./ansible_hosts.ini ./modules/k8s-bootstrap/post-bootstrap.yml --private-key=~/.ssh/id_ed25519"
   }
 }
-
-#resource "null_resource" "ansible_post_bootstrap" {
-#  depends_on = [null_resource.ansible_apply, aws_route53_record.argocd_west, aws_route53_record.argocd_east]
-#  provisioner "local-exec" {
-#    command = "sleep 30 && ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i ./ansible_hosts.ini ./modules/k8s-bootstrap/post-bootstrap.yml --private-key=~/.ssh/id_ed25519"
-#  }
-#}
 
 #DNS#
 data "aws_route53_zone" "main" {

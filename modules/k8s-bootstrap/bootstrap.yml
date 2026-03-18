@@ -186,6 +186,62 @@
       changed_when: false
       failed_when: false
 
+    - name: Create openssl config with SAN
+      copy:
+        dest: /tmp/openssl-kubelet.cnf
+        content: |
+          [ req ]
+          default_bits       = 2048
+          distinguished_name = req_distinguished_name
+          req_extensions     = req_ext
+          prompt = no
+          [ req_distinguished_name ]
+          CN = {{ inventory_hostname }}
+          [ req_ext ]
+          subjectAltName = @alt_names
+          [ alt_names ]
+          DNS.1 = {{ inventory_hostname }}
+          IP.1  = {{ ansible_host }}
+
+    - name: Generate kubelet key
+      shell: openssl genrsa -out /var/lib/kubelet/pki/kubelet.key 2048
+      args: { creates: /var/lib/kubelet/pki/kubelet.key }
+
+    - name: Generate kubelet CSR
+      shell: |
+        openssl req -new -key /var/lib/kubelet/pki/kubelet.key \
+        -out /tmp/kubelet.csr \
+        -config /tmp/openssl-kubelet.cnf
+      args: { creates: /tmp/kubelet.csr }
+
+    - name: SIGN kubelet CSR with cluster CA
+      shell: |
+        openssl x509 -req -in /tmp/kubelet.csr \
+          -CA /etc/kubernetes/pki/ca.crt \
+          -CAkey /etc/kubernetes/pki/ca.key \
+          -CAcreateserial \
+          -out /var/lib/kubelet/pki/kubelet.crt \
+          -days 365 \
+          -extensions req_ext \
+          -extfile /tmp/openssl-kubelet.cnf
+      args: { creates: /var/lib/kubelet/pki/kubelet.crt }
+
+    - name: Set permissions for certs
+      file:
+        path: "/var/lib/kubelet/pki/"
+        recurse: yes
+        owner: root
+        group: root
+
+    - name: Clean up openssl artifacts
+      file:
+        state: absent
+        path: "/tmp/{{ item }}"
+      with_items:
+        - openssl-kubelet.cnf
+        - kubelet.csr
+        - ca.srl
+
     - name: get upload-certs key
       shell: kubeadm init phase upload-certs --upload-certs | tail -1
       register: cert_key
@@ -259,6 +315,26 @@
           Worker join: {{ worker_join.stdout }}
           Master join: {{ master_join.stdout }}
 
+- hosts: all
+  become: yes
+  tasks:
+    - name: Ensure /var/lib/kubelet/pki exists
+      file:
+        path: /var/lib/kubelet/pki
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Copy cluster CA (ca.crt)
+      shell: |
+        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /home/{{ kube_user }}/aws-new {{ kube_user }}@{{ hostvars['master1'].ansible_host }}:/home/{{ kube_user }}/ca.crt /var/lib/kubelet/pki/ca.crt
+        chown root:root /var/lib/kubelet/pki/ca.crt
+        chmod 0644 /var/lib/kubelet/pki/ca.crt
+      args:
+        creates: /var/lib/kubelet/pki/ca.crt
+      when: inventory_hostname != 'master1'
+
 - hosts: master2
   become: yes
   vars:
@@ -272,6 +348,17 @@
         msg: "This master is already initialized"
       when: admin_conf.stat.exists
 
+    - name: Wait for join script on master1
+      wait_for:
+ #       host: "{{ hostvars['master1'].ansible_host }}"
+ #       port: 22
+        path: /tmp/master_join.sh
+        state: present
+        delay: 5
+        timeout: 120
+      delegate_to: master1
+      become: true
+    
     - name: Get join-command for master2 via SSH for master1
       shell: >
         ssh -i /home/{{ kube_user }}/aws-new -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no {{ kube_user }}@{{ hostvars['master1'].ansible_host }} 'cat /tmp/master_join.sh'
@@ -330,6 +417,88 @@
       changed_when: false
       failed_when: false
 
+    - name: Generate kubelet key
+      shell: openssl genrsa -out /tmp/kubelet.key 2048
+      args: { creates: /tmp/kubelet.key }
+
+    - name: Create openssl config with SAN
+      copy:
+        dest: /tmp/openssl-kubelet.cnf
+        content: |
+          [ req ]
+          default_bits       = 2048
+          distinguished_name = req_distinguished_name
+          req_extensions     = req_ext
+          prompt = no
+          [ req_distinguished_name ]
+          CN = {{ inventory_hostname }}
+          [ req_ext ]
+          subjectAltName = @alt_names
+          [ alt_names ]
+          DNS.1 = {{ inventory_hostname }}
+          IP.1  = {{ ansible_host }}
+
+    - name: Generate kubelet CSR
+      shell: openssl req -new -key /tmp/kubelet.key -out /tmp/kubelet.csr -config /tmp/openssl-kubelet.cnf
+      args: { creates: /tmp/kubelet.csr }
+
+    - name: Copy kubelet CSR to master1
+      fetch:
+        src: /tmp/kubelet.csr
+        dest: "/tmp/kubelet-{{ inventory_hostname }}.csr"
+        flat: yes
+        
+    - name: Copy CSR from controller to master1 
+      copy:
+        src: "/tmp/kubelet-{{ item }}.csr"
+        dest: "/tmp/kubelet-{{ item }}.csr"
+        owner: root
+        group: root
+        mode: "0600"
+      delegate_to: master1
+      with_items: "{{ groups['workers'] + ['master2'] }}"    
+
+- hosts: master1
+  become: yes
+  tasks:
+    - name: Ensure CSRs are present
+      stat:
+        path: "/tmp/kubelet-{{ item }}.csr"
+      loop: "{{ groups['workers'] + ['master2'] }}"
+
+    - name: Create openssl configs per CSR
+      copy:
+        dest: "/tmp/openssl-kubelet-{{ item }}.cnf"
+        content: |
+          [ req ]
+          default_bits       = 2048
+          distinguished_name = req_distinguished_name
+          req_extensions     = req_ext
+          prompt = no
+          [ req_distinguished_name ]
+          CN = {{ item }}
+          [ req_ext ]
+          subjectAltName = @alt_names
+          [ alt_names ]
+          DNS.1 = {{ item }}
+          IP.1  = {{ hostvars[item].ansible_host }}
+      loop: "{{ groups['workers'] + ['master2'] }}"
+
+    - name: SIGN kubelet CSR with cluster CA
+      shell: |
+        openssl x509 -req -in /tmp/kubelet-{{ item }}.csr \
+          -CA /etc/kubernetes/pki/ca.crt \
+          -CAkey /etc/kubernetes/pki/ca.key \
+          -CAcreateserial \
+          -out /tmp/kubelet-{{ item }}.crt \
+          -days 365 \
+          -extensions req_ext \
+          -extfile /tmp/openssl-kubelet-{{ item }}.cnf
+
+      loop: "{{ groups['workers'] + ['master2'] }}"
+      args:
+        creates: "/tmp/kubelet-{{ item }}.crt"
+
 - hosts: workers
   become: yes
   vars:
@@ -342,6 +511,17 @@
     - fail:
         msg: "This worker is already joined"
       when: kubelet_conf.stat.exists
+
+    - name: Wait for join script on master1
+      wait_for:
+#        host: "{{ hostvars['master1'].ansible_host }}"
+#        port: 22
+        path: /tmp/worker_join.sh
+        state: present
+        delay: 5
+        timeout: 120
+      delegate_to: master1
+      become: true
 
     - name: Get join for workers via SSH from master1
       shell: >
@@ -359,3 +539,29 @@
         state: present
         delay: 5
         timeout: 60
+
+    - name: Get signed kubelet.crt
+      fetch:
+        src: "/tmp/kubelet-{{ inventory_hostname }}.crt"
+        dest: "/tmp/"
+        flat: yes
+
+    - name: Copy kubelet.crt into place
+      copy:
+        src: "/tmp/kubelet-{{ inventory_hostname }}.crt"
+        dest: /var/lib/kubelet/pki/kubelet.crt
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Copy kubelet.key into place
+      command: mv /tmp/kubelet.key /var/lib/kubelet/pki/kubelet.key
+      args:
+        creates: /var/lib/kubelet/pki/kubelet.key
+
+    - name: Set permissions for key
+      file:
+        path: /var/lib/kubelet/pki/kubelet.key
+        owner: root
+        group: root
+        mode: '0600'    

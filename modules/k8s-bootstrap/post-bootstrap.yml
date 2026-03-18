@@ -33,13 +33,13 @@
     - name: Create namespace mntr
       command: kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace mntr
 
-    - name: Create secret etcd
+    - name: Create secret etcd-certs
       command: sudo kubectl -n mntr --kubeconfig=/etc/kubernetes/admin.conf create secret generic etcd-certs --from-file=ca.crt=/etc/kubernetes/pki/etcd/ca.crt --from-file=server.crt=/etc/kubernetes/pki/etcd/server.crt --from-file=server.key=/etc/kubernetes/pki/etcd/server.key
 
-    - name: Apply Calico CRDs (root)
+    - name: Apply Calico CRDs
       command: kubectl apply --kubeconfig=/etc/kubernetes/admin.conf -f https://docs.projectcalico.org/manifests/crds.yaml --kubeconfig={{ kubeconfig }}
 
-    - name: Apply Calico operator CRDs (root)
+    - name: Apply Calico operator CRDs
       command: kubectl apply --kubeconfig=/etc/kubernetes/admin.conf --server-side --force-conflicts -f https://raw.githubusercontent.com/projectcalico/calico/{{ calico_operator_version }}/manifests/operator-crds.yaml --kubeconfig={{ kubeconfig }}
 
     - name: Apply allow-all Calico policy
@@ -48,44 +48,63 @@
         KUBECONFIG: "{{ kubeconfig }}"
       when: allow_policy is file
 
-    - name: Install Helm3 (user)
+    - name: Install Helm3 
       become_user: "{{ kube_user }}"
       shell: curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
       args:
         creates: "{{ home_dir }}/.local/bin/helm"
 
-    - name: Add ingress-nginx repository (user)
+    - name: Add ingress-nginx repository
       become_user: "{{ kube_user }}"
       shell: helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx || true
 
-    - name: Update Helm repositories (user)
+    - name: Update Helm repositories
       become_user: "{{ kube_user }}"
       shell: helm repo update
 
-    - name: Deploy ingress-nginx via Helm (user)
+    - name: Deploy ingress-nginx via Helm
       become_user: "{{ kube_user }}"
       shell: |
         helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
           --namespace ingress-nginx --create-namespace
 
-    - name: Add aws-observability Helm repository (user)
+    - name: Add aws-observability Helm repository
       become_user: "{{ kube_user }}"
       shell: |
         helm repo add aws-observability https://aws-observability.github.io/helm-charts || true
 
-    - name: Update Helm repositories for fluent-bit (user)
+    - name: Update Helm repositories for fluent-bit
       become_user: "{{ kube_user }}"
       shell: helm repo update
 
     - name: Create namespace for cwagent
       command: kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace amazon-cloudwatch
 
-    - name: Deploy observability
+#replace value for github action paths
+    - name: Render CloudWatch values.yaml
+      become_user: "{{ kube_user }}"
+      template:
+        src: "/mnt/c/Users/knmalyshev/projects/awsk8s/manifests/logs/metrics/cloudwatch-values.yaml.j2"
+        dest: "{{ home_dir }}/code/logs/metrics/values-{{ inventory_hostname }}.yaml"
+      vars:
+        kubelet_endpoint: "https://{{ ansible_hostname }}:10250"
+        node_region: "{{ 'eu-west-1' if ansible_host is search('^10\\.20\\.') else 'us-east-1' }}"
+        node_name: "{{ inventory_hostname }}"
+
+    - name: Install CloudWatch agent with node endpoint
       become_user: "{{ kube_user }}"
       shell: |
-        helm upgrade --install amazon-cloudwatch-observability aws-observability/amazon-cloudwatch-observability \
+        helm upgrade --install amazon-cloudwatch-observability \
+          aws-observability/amazon-cloudwatch-observability \
           --namespace amazon-cloudwatch --create-namespace \
-          -f {{ home_dir }}/code/logs/metrics/values.yaml || true  
+          -f {{ home_dir }}/code/logs/metrics/values-{{ inventory_hostname }}.yaml || true
+
+#    - name: Deploy observability
+#      become_user: "{{ kube_user }}"
+#      shell: |
+#        helm upgrade --install amazon-cloudwatch-observability aws-observability/amazon-cloudwatch-observability \
+#          --namespace amazon-cloudwatch --create-namespace \
+#          -f {{ home_dir }}/code/logs/metrics/values.yaml || true  
 
     - name: Wait for argocd-initial-admin-secret
       shell: kubectl --kubeconfig=/etc/kubernetes/admin.conf -n argocd get secret argocd-initial-admin-secret --no-headers
