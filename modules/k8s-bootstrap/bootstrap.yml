@@ -14,6 +14,7 @@
     - name: Basic OS preparation
       apt:
         name:
+          - openssl
           - ca-certificates
           - curl
           - gnupg
@@ -64,6 +65,12 @@
         path: /etc/apt/keyrings
         state: directory
         mode: '0755'
+
+    - name: Setup /var/lib/kubelet/pki
+      file:
+        path: /var/lib/kubelet/pki
+        state: directory
+        mode: '0755'    
 
     - name: Download and install Kubernetes GPG key (v1.35+)
       shell: curl -fsSL {{ kubernetes_apt_key_url }} | gpg --dearmor -o {{ kubernetes_apt_key_file }}
@@ -140,11 +147,232 @@
         path: /run/containerd/containerd.sock
         state: present
         delay: 2
-        timeout: 30
+        timeout: 30    
+
+- hosts: workers:master2
+  become: yes
+  gather_facts: false
+  tasks:
+    - name: Generate kubelet key
+      shell: openssl genrsa -out /tmp/kubelet.key 2048
+      args: { creates: /tmp/kubelet.key }
+
+    - name: Create openssl config with SAN
+      copy:
+        dest: /tmp/openssl-kubelet.cnf
+        content: |
+          [ req ]
+          default_bits = 2048
+          distinguished_name = req_distinguished_name
+          req_extensions = req_ext
+          prompt = no
+          [ req_distinguished_name ]
+          CN = {{ inventory_hostname }}
+          [ req_ext ]
+          subjectAltName = @alt_names
+          [ alt_names ]
+          DNS.1 = {{ inventory_hostname }}
+          IP.1 = {{ ansible_host }}
+
+    - name: Generate kubelet CSR
+      shell: openssl req -new -key /tmp/kubelet.key -out /tmp/kubelet.csr -config /tmp/openssl-kubelet.cnf
+      args: { creates: /tmp/kubelet.csr }
+
+    - name: Fetch kubelet CSR to controller
+      fetch:
+        src: /tmp/kubelet.csr
+        dest: "{{ playbook_dir }}/csr_collect/kubelet-{{ inventory_hostname }}.csr"
+        flat: true
+
+    - name: Restart kubelet after crt/key copied
+      systemd:
+        name: kubelet
+        state: restarted    
+
+- hosts: localhost
+  gather_facts: false
+  tasks:
+    
+    - name: Wait until all CSR present locally
+      become: false
+      wait_for:
+        path: "{{ playbook_dir }}/csr_collect/kubelet-{{ item }}.csr"
+        state: present
+        timeout: 120
+      loop: "{{ groups['workers'] + ['master2'] }}"
+
+    - name: Copy csr from controller to master
+      copy:
+        src: "{{ playbook_dir }}/csr_collect/kubelet-{{ item }}.csr"
+        dest: "/tmp/kubelet-{{ item }}.csr"
+        owner: root
+        group: root
+        mode: "0600"
+      delegate_to: master1
+      become: yes
+      loop: "{{ groups['workers'] + ['master2'] }}"
+
+- hosts: master1
+  become: yes
+  vars:
+    kube_user: "ubuntu"
+    pod_cidr: "192.168.0.0/16"
+    kubernetes_apt_key_url: https://pkgs.k8s.io/core:/stable:/v1.35/deb/Release.key
+    kubernetes_apt_key_file: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    kubernetes_apt_repo: 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.35/deb/ /'
+    k8s_cni_version: v1.4.0
+    pause_image: registry.k8s.io/pause:3.10.1
+  gather_facts: false
+  tasks:
 
     - name: Print ready message
       debug:
         msg: "System, containerd and Kubernetes binaries ready. Now run 'kubeadm init ...' on control-plane and join workers."
+
+    - name: kubeadm init
+      shell: |
+        kubeadm init --pod-network-cidr={{ pod_cidr }} --control-plane-endpoint="{{ ansible_host }}:6443" --apiserver-advertise-address="{{ ansible_host }}" --upload-certs
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Create openssl configs per CSR
+      copy:
+        dest: "/tmp/openssl-kubelet-{{ item }}.cnf"
+        content: |
+          [ req ]
+          default_bits = 2048
+          distinguished_name = req_distinguished_name
+          req_extensions = req_ext
+          prompt = no
+          [ req_distinguished_name ]
+          CN = {{ item }}
+          [ req_ext ]
+          subjectAltName = @alt_names
+          [ alt_names ]
+          DNS.1 = {{ item }}
+          IP.1 = {{ hostvars[item].ansible_host }}
+      loop: "{{ groups['workers'] + ['master2'] }}"
+
+    - name: SIGN kubelet CSR with cluster CA
+      shell: |
+        openssl x509 -req -in /tmp/kubelet-{{ item }}.csr \
+          -CA /etc/kubernetes/pki/ca.crt \
+          -CAkey /etc/kubernetes/pki/ca.key \
+          -CAcreateserial \
+          -out /tmp/kubelet-{{ item }}.crt \
+          -days 365 \
+          -extensions req_ext \
+          -extfile /tmp/openssl-kubelet-{{ item }}.cnf
+      loop: "{{ groups['workers'] + ['master2'] }}"
+      args:
+        creates: "/tmp/kubelet-{{ item }}.crt"
+
+    - name: Fetch all signed kubelet.crt from master1
+      fetch:
+        src: "/tmp/kubelet-{{ item }}.crt"
+        dest: "{{ playbook_dir }}/crt_collect/"
+        flat: true
+      loop: "{{ groups['workers'] + ['master2'] }}"
+
+    - name: Restart kubelet after crt/key copied
+      systemd:
+        name: kubelet
+        state: restarted  
+
+- hosts: workers:master2
+  become: yes
+  gather_facts: false
+  tasks:
+    - name: Copy kubelet.crt into place
+      copy:
+        src: "{{ playbook_dir }}/crt_collect/kubelet-{{ inventory_hostname }}.crt"
+        dest: /var/lib/kubelet/pki/kubelet.crt
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Move kubelet.key into place
+      shell: mv /tmp/kubelet.key /var/lib/kubelet/pki/kubelet.key
+      args:
+        creates: /var/lib/kubelet/pki/kubelet.key
+
+    - name: Set permissions for key
+      file:
+        path: /var/lib/kubelet/pki/kubelet.key
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Restart kubelet after crt/key in place
+      systemd:
+        name: kubelet
+        state: restarted    
+###########################################
+#- hosts: all
+#  become: yes
+#  vars:
+#    kube_user: "ubuntu"
+#    kubernetes_apt_key_url: https://pkgs.k8s.io/core:/stable:/v1.35/deb/Release.key
+#    kubernetes_apt_key_file: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+#    kubernetes_apt_repo: 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.35/deb/ /'
+#    k8s_cni_version: v1.4.0
+#    pause_image: registry.k8s.io/pause:3.10.1
+#
+#  tasks:
+#    - name: Install containerd and CNI deps
+#      apt:
+#        name:
+#          - containerd
+#        state: latest
+#
+#    - name: Generate containerd config.toml (with systemd cgroup)
+#      shell: |
+#        mkdir -p /etc/containerd
+#        containerd config default > /etc/containerd/config.toml
+#        sed -i 's/^\(\s*SystemdCgroup = \).*$/\1true/' /etc/containerd/config.toml
+#        sed -i 's#sandbox_image = ".*"#sandbox_image = "{{ pause_image }}"#' /etc/containerd/config.toml
+#
+#    - name: Ensure /usr/lib/cni exists
+#      file:
+#        path: /usr/lib/cni
+#        state: directory
+#        mode: '0755'
+#
+#    - name: Download CNI plugins
+#      get_url:
+#        url: "https://github.com/containernetworking/plugins/releases/download/{{ k8s_cni_version }}/cni-plugins-linux-amd64-{{ k8s_cni_version }}.tgz"
+#        dest: /tmp/cni-plugins.tgz
+#        mode: '0644'
+#        force: yes
+#
+#    - name: Unpack CNI plugins
+#      unarchive:
+#        src: /tmp/cni-plugins.tgz
+#        dest: /usr/lib/cni
+#        remote_src: yes
+#
+#    - name: Enable and restart containerd
+#      systemd:
+#        name: containerd
+#        enabled: true
+#        state: restarted
+#
+#    - name: Ensure kubelet is enabled and started
+#      systemd:
+#        name: kubelet
+#        enabled: true
+#        state: started
+#
+#    - name: Wait for containerd socket
+#      wait_for:
+#        path: /run/containerd/containerd.sock
+#        state: present
+#        delay: 2
+#        timeout: 30
+#
+#    - name: Print ready message
+#      debug:
+#        msg: "System, containerd and Kubernetes binaries ready. Now run 'kubeadm init ...' on control-plane and join workers."
 
 - hosts: master1
   become: yes
@@ -152,11 +380,11 @@
     kube_user: "ubuntu"
     pod_cidr: "192.168.0.0/16"
   tasks:
-    - name: kubeadm init
-      shell: |
-        kubeadm init --pod-network-cidr={{ pod_cidr }} --control-plane-endpoint="{{ ansible_host }}:6443" --apiserver-advertise-address="{{ ansible_host }}" --upload-certs
-      args:
-        creates: /etc/kubernetes/admin.conf
+#    - name: kubeadm init
+#      shell: |
+#        kubeadm init --pod-network-cidr={{ pod_cidr }} --control-plane-endpoint="{{ ansible_host }}:6443" --apiserver-advertise-address="{{ ansible_host }}" --upload-certs
+#      args:
+#        creates: /etc/kubernetes/admin.conf
 
     - name: copy kubeconfig
       shell: |
@@ -315,26 +543,6 @@
           Worker join: {{ worker_join.stdout }}
           Master join: {{ master_join.stdout }}
 
-- hosts: all
-  become: yes
-  tasks:
-    - name: Ensure /var/lib/kubelet/pki exists
-      file:
-        path: /var/lib/kubelet/pki
-        state: directory
-        owner: root
-        group: root
-        mode: '0755'
-
-    - name: Copy cluster CA (ca.crt)
-      shell: |
-        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /home/{{ kube_user }}/aws-new {{ kube_user }}@{{ hostvars['master1'].ansible_host }}:/home/{{ kube_user }}/ca.crt /var/lib/kubelet/pki/ca.crt
-        chown root:root /var/lib/kubelet/pki/ca.crt
-        chmod 0644 /var/lib/kubelet/pki/ca.crt
-      args:
-        creates: /var/lib/kubelet/pki/ca.crt
-      when: inventory_hostname != 'master1'
-
 - hosts: master2
   become: yes
   vars:
@@ -350,8 +558,6 @@
 
     - name: Wait for join script on master1
       wait_for:
- #       host: "{{ hostvars['master1'].ansible_host }}"
- #       port: 22
         path: /tmp/master_join.sh
         state: present
         delay: 5
@@ -360,9 +566,13 @@
       become: true
     
     - name: Get join-command for master2 via SSH for master1
+      become: false
       shell: >
         ssh -i /home/{{ kube_user }}/aws-new -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no {{ kube_user }}@{{ hostvars['master1'].ansible_host }} 'cat /tmp/master_join.sh'
       register: master_join
+      retries: 5
+      delay: 3
+      until: master_join.rc == 0
 
     - name: Save master join command locally
       copy:
@@ -415,89 +625,7 @@
       delay: 10
       until: pod_status.stdout == ""
       changed_when: false
-      failed_when: false
-
-    - name: Generate kubelet key
-      shell: openssl genrsa -out /tmp/kubelet.key 2048
-      args: { creates: /tmp/kubelet.key }
-
-    - name: Create openssl config with SAN
-      copy:
-        dest: /tmp/openssl-kubelet.cnf
-        content: |
-          [ req ]
-          default_bits       = 2048
-          distinguished_name = req_distinguished_name
-          req_extensions     = req_ext
-          prompt = no
-          [ req_distinguished_name ]
-          CN = {{ inventory_hostname }}
-          [ req_ext ]
-          subjectAltName = @alt_names
-          [ alt_names ]
-          DNS.1 = {{ inventory_hostname }}
-          IP.1  = {{ ansible_host }}
-
-    - name: Generate kubelet CSR
-      shell: openssl req -new -key /tmp/kubelet.key -out /tmp/kubelet.csr -config /tmp/openssl-kubelet.cnf
-      args: { creates: /tmp/kubelet.csr }
-
-    - name: Copy kubelet CSR to master1
-      fetch:
-        src: /tmp/kubelet.csr
-        dest: "/tmp/kubelet-{{ inventory_hostname }}.csr"
-        flat: yes
-        
-    - name: Copy CSR from controller to master1 
-      copy:
-        src: "/tmp/kubelet-{{ item }}.csr"
-        dest: "/tmp/kubelet-{{ item }}.csr"
-        owner: root
-        group: root
-        mode: "0600"
-      delegate_to: master1
-      with_items: "{{ groups['workers'] + ['master2'] }}"    
-
-- hosts: master1
-  become: yes
-  tasks:
-    - name: Ensure CSRs are present
-      stat:
-        path: "/tmp/kubelet-{{ item }}.csr"
-      loop: "{{ groups['workers'] + ['master2'] }}"
-
-    - name: Create openssl configs per CSR
-      copy:
-        dest: "/tmp/openssl-kubelet-{{ item }}.cnf"
-        content: |
-          [ req ]
-          default_bits       = 2048
-          distinguished_name = req_distinguished_name
-          req_extensions     = req_ext
-          prompt = no
-          [ req_distinguished_name ]
-          CN = {{ item }}
-          [ req_ext ]
-          subjectAltName = @alt_names
-          [ alt_names ]
-          DNS.1 = {{ item }}
-          IP.1  = {{ hostvars[item].ansible_host }}
-      loop: "{{ groups['workers'] + ['master2'] }}"
-
-    - name: SIGN kubelet CSR with cluster CA
-      shell: |
-        openssl x509 -req -in /tmp/kubelet-{{ item }}.csr \
-          -CA /etc/kubernetes/pki/ca.crt \
-          -CAkey /etc/kubernetes/pki/ca.key \
-          -CAcreateserial \
-          -out /tmp/kubelet-{{ item }}.crt \
-          -days 365 \
-          -extensions req_ext \
-          -extfile /tmp/openssl-kubelet-{{ item }}.cnf
-
-      loop: "{{ groups['workers'] + ['master2'] }}"
-      args:
-        creates: "/tmp/kubelet-{{ item }}.crt"
+      failed_when: false    
 
 - hosts: workers
   become: yes
@@ -539,29 +667,3 @@
         state: present
         delay: 5
         timeout: 60
-
-    - name: Get signed kubelet.crt
-      fetch:
-        src: "/tmp/kubelet-{{ inventory_hostname }}.crt"
-        dest: "/tmp/"
-        flat: yes
-
-    - name: Copy kubelet.crt into place
-      copy:
-        src: "/tmp/kubelet-{{ inventory_hostname }}.crt"
-        dest: /var/lib/kubelet/pki/kubelet.crt
-        owner: root
-        group: root
-        mode: "0644"
-
-    - name: Copy kubelet.key into place
-      command: mv /tmp/kubelet.key /var/lib/kubelet/pki/kubelet.key
-      args:
-        creates: /var/lib/kubelet/pki/kubelet.key
-
-    - name: Set permissions for key
-      file:
-        path: /var/lib/kubelet/pki/kubelet.key
-        owner: root
-        group: root
-        mode: '0600'    
