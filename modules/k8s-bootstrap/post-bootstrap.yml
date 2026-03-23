@@ -84,7 +84,7 @@
     - name: Render CloudWatch values.yaml
       become_user: "{{ kube_user }}"
       template:
-        src: "/mnt/c/Users/knmalyshev/projects/awsk8s/manifests/logs/metrics/cloudwatch-values.yaml.j2"
+        src: "../../manifests/logs/metrics/cloudwatch-values.yaml.j2"
         dest: "{{ home_dir }}/code/logs/metrics/values-{{ inventory_hostname }}.yaml"
       vars:
         kubelet_endpoint: "https://{{ ansible_hostname }}:10250"
@@ -99,13 +99,6 @@
           --namespace amazon-cloudwatch --create-namespace \
           -f {{ home_dir }}/code/logs/metrics/values-{{ inventory_hostname }}.yaml || true
 
-#    - name: Deploy observability
-#      become_user: "{{ kube_user }}"
-#      shell: |
-#        helm upgrade --install amazon-cloudwatch-observability aws-observability/amazon-cloudwatch-observability \
-#          --namespace amazon-cloudwatch --create-namespace \
-#          -f {{ home_dir }}/code/logs/metrics/values.yaml || true  
-
     - name: Wait for argocd-initial-admin-secret
       shell: kubectl --kubeconfig=/etc/kubernetes/admin.conf -n argocd get secret argocd-initial-admin-secret --no-headers
       register: argo_secret_ready
@@ -118,6 +111,25 @@
       register: argocd_pw
       changed_when: false
       failed_when: false
+
+    - name: Login to ArgoCD via CLI
+      shell: |
+        argocd login  --core --username admin --password {{ argocd_pw.stdout }} --insecure
+      become_user: "{{ kube_user }}"
+
+    - name: Automatically register Repo and Create App
+      shell: |
+        argocd repo add https://github.com/elBaguett/mntr.git --upsert
+        argocd app create mntr \
+          --repo https://github.com/elBaguett/mntr.git \
+          --path /manifests/refactored \
+          --dest-server https://kubernetes.default.svc \
+          --dest-namespace mntr \
+          --sync-policy automated \
+          --self-heal \
+          --upsert
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"  
 
     - debug:
         msg: "ArgoCD initial admin password: {{ argocd_pw.stdout | default('not found') }}"
