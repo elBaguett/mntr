@@ -103,6 +103,13 @@
           - containerd
         state: latest
 
+    - name: Install argocd CLI
+      shell: |
+        VERSION=$(curl --silent "https://api.github.com/repos/argoproj/argo-cd/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+        curl -sSL -o argocd-linux-amd64 "https://github.com/argoproj/argo-cd/releases/download/$VERSION/argocd-linux-amd64"
+        sudo install -m 555 argocd-linux-amd64 /usr/local/bin/argocd
+        rm argocd-linux-amd64    
+
     - name: Generate containerd config.toml (with systemd cgroup)
       shell: |
         mkdir -p /etc/containerd
@@ -366,8 +373,8 @@
     - name: Restart kubelet after crt/key in place
       systemd:
         name: kubelet
-        state: restarted    
-
+        state: restarted
+        
 - hosts: master1
   become: yes
   vars:

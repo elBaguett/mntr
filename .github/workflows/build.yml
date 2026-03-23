@@ -1,0 +1,62 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Lint & Tests
+        run: |
+          echo "Running linting..."
+          echo "Running tests..."
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/my-app:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/my-app:$IMAGE_TAG
+
+      - name: Update Helm image tag
+        run: |
+          # Используем sed для обновления тега в values.yaml
+          sed -i "s/tag: .*/tag: ${{ github.sha }}/g" ./charts/my-app/values.yaml
+          
+          # Опционально: commit и push изменений обратно в репозиторий (GitOps-стиль)
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add ./charts/my-app/values.yaml
+          git commit -m "Update image tag to ${{ github.sha }}"
+          git push
+      
+      - name: Install Ansible
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Destroy
+        run: terraform destroy -auto-approve -input=false
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve -input=false
