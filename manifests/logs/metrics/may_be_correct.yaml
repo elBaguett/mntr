@@ -1,6 +1,5 @@
 region: eu-west-1
 clusterName: mntr
-# Указываем, что это обычный K8s
 k8sMode: K8S
 
 containerLogs:
@@ -35,15 +34,12 @@ agent:
     repository: public.ecr.aws/cloudwatch-agent/cloudwatch-agent
     tag: 1.303026.0
   
-  # ПРЯМАЯ КОНФИГУРАЦИЯ (ADOT Mode) - самая стабильная для кастомных кластеров
   config:
     receivers:
       awscontainerinsightreceiver:
-        # Ключевые настройки для self-managed:
         cluster_name: "mntr"
         endpoint: "https://$(HOST_IP):10250"
         insecure_skip_verify: true
-        # Отключаем поиск метаданных EKS/ECS
         add_full_pod_name_metric_label: true
         add_container_name_metric_label: true
         
@@ -59,7 +55,6 @@ agent:
           receivers: [awscontainerinsightreceiver]
           exporters: [awsemf]
 
-# Важно для работы внутри EC2 без EKS-аддонов
 kubeletConfig:
   insecureSkipVerify: true
 

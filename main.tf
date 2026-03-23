@@ -551,3 +551,11 @@ resource "aws_acm_certificate_validation" "argocd_us_east" {
 }
 
 #DNS#
+
+#Metrics#
+module "metrics" {
+  source       = "./modules/metrics"
+  cluster_name = "mntr"
+  alert_email  = "mme37005@gmail.com"
+}
+#Metrics#

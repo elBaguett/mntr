@@ -1,5 +1,5 @@
 replicaCount: 1
-
+#here replace latest tag with smth like {{tag received from build pipeline}}
 image:
   repository: lebonkdoge/mntr
   tag: backend-latest

@@ -80,7 +80,6 @@
     - name: Create namespace for cwagent
       command: kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace amazon-cloudwatch
 
-#replace value for github action paths
     - name: Render CloudWatch values.yaml
       become_user: "{{ kube_user }}"
       template:
@@ -111,25 +110,23 @@
       register: argocd_pw
       changed_when: false
       failed_when: false
-
-    - name: Login to ArgoCD via CLI
-      shell: |
-        argocd login  --core --username admin --password {{ argocd_pw.stdout }} --insecure
-      become_user: "{{ kube_user }}"
-
-    - name: Automatically register Repo and Create App
-      shell: |
-        argocd repo add https://github.com/elBaguett/mntr.git --upsert
-        argocd app create mntr \
-          --repo https://github.com/elBaguett/mntr.git \
-          --path /manifests/refactored \
-          --dest-server https://kubernetes.default.svc \
-          --dest-namespace mntr \
-          --sync-policy automated \
-          --self-heal \
-          --upsert
-      environment:
-        KUBECONFIG: "{{ kubeconfig }}"  
+#argocd upsert happens before dns, need to carry it out to different step
+#argocd not showing up at address argocd.argocd.click, need to find out why
+#argo-cm not found
+#    - name: Automatically register Repo and Create App
+#      shell: |
+#        argocd login argocd.argocd.click --core --username admin --password c2FSm5O-yd8Qv3KR --insecure
+#        argocd repo add https://github.com/elBaguett/mntr.git --upsert
+#        argocd app create mntr \
+#          --repo https://github.com/elBaguett/mntr.git \
+#          --path /manifests/refactored \
+#          --dest-server https://kubernetes.default.svc \
+#          --dest-namespace mntr \
+#          --sync-policy automated \
+#          --self-heal \
+#          --upsert
+#      environment:
+#        KUBECONFIG: "{{ kubeconfig }}"  
 
     - debug:
         msg: "ArgoCD initial admin password: {{ argocd_pw.stdout | default('not found') }}"

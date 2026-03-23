@@ -51,10 +51,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install ansible
-
+#get state from s3 bucket using gh credentials
       - name: Terraform Init
         run: terraform init
-
+#need to add sed with file modification to replace some values with new tags after image build
       - name: Terraform Destroy
         run: terraform destroy -auto-approve -input=false
 
