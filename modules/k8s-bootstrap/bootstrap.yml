@@ -10,7 +10,6 @@
     pause_image: registry.k8s.io/pause:3.10.1
 
   tasks:
-
     - name: Basic OS preparation
       apt:
         name:
@@ -235,6 +234,67 @@
       args:
         creates: /etc/kubernetes/admin.conf
 
+    - name: Remove old kubelet cert/key if present (master1)
+      file:
+        path: "/var/lib/kubelet/pki/{{ item }}"
+        state: absent
+      loop:
+        - kubelet.crt
+        - kubelet.key
+
+    - name: Create openssl config with SAN for master1 kubelet
+      copy:
+        dest: /tmp/openssl-kubelet-master1.cnf
+        content: |
+          [ req ]
+          default_bits = 2048
+          distinguished_name = req_distinguished_name
+          req_extensions = req_ext
+          prompt = no
+          [ req_distinguished_name ]
+          CN = {{ inventory_hostname }}
+          [ req_ext ]
+          subjectAltName = @alt_names
+          [ alt_names ]
+          DNS.1 = {{ inventory_hostname }}
+          IP.1  = {{ ansible_host }}
+
+    - name: Generate kubelet key for master1
+      shell: openssl genrsa -out /var/lib/kubelet/pki/kubelet.key 2048
+      args: { creates: /var/lib/kubelet/pki/kubelet.key }
+
+    - name: Generate kubelet CSR for master1
+      shell: |
+        openssl req -new -key /var/lib/kubelet/pki/kubelet.key \
+        -out /tmp/kubelet-master1.csr \
+        -config /tmp/openssl-kubelet-master1.cnf
+      args: { creates: /tmp/kubelet-master1.csr }
+
+    - name: Sign kubelet CSR with cluster CA for master1
+      shell: |
+        openssl x509 -req -in /tmp/kubelet-master1.csr \
+          -CA /etc/kubernetes/pki/ca.crt \
+          -CAkey /etc/kubernetes/pki/ca.key \
+          -CAcreateserial \
+          -out /var/lib/kubelet/pki/kubelet.crt \
+          -days 365 \
+          -extensions req_ext \
+          -extfile /tmp/openssl-kubelet-master1.cnf
+      args: { creates: /var/lib/kubelet/pki/kubelet.crt }
+
+    - name: Set permissions for certs (master1)
+      file:
+        path: "/var/lib/kubelet/pki/"
+        recurse: yes
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Restart kubelet (master1 SAN cert)
+      systemd:
+        name: kubelet
+        state: restarted    
+
     - name: Create openssl configs per CSR
       copy:
         dest: "/tmp/openssl-kubelet-{{ item }}.cnf"
@@ -307,72 +367,6 @@
       systemd:
         name: kubelet
         state: restarted    
-###########################################
-#- hosts: all
-#  become: yes
-#  vars:
-#    kube_user: "ubuntu"
-#    kubernetes_apt_key_url: https://pkgs.k8s.io/core:/stable:/v1.35/deb/Release.key
-#    kubernetes_apt_key_file: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-#    kubernetes_apt_repo: 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.35/deb/ /'
-#    k8s_cni_version: v1.4.0
-#    pause_image: registry.k8s.io/pause:3.10.1
-#
-#  tasks:
-#    - name: Install containerd and CNI deps
-#      apt:
-#        name:
-#          - containerd
-#        state: latest
-#
-#    - name: Generate containerd config.toml (with systemd cgroup)
-#      shell: |
-#        mkdir -p /etc/containerd
-#        containerd config default > /etc/containerd/config.toml
-#        sed -i 's/^\(\s*SystemdCgroup = \).*$/\1true/' /etc/containerd/config.toml
-#        sed -i 's#sandbox_image = ".*"#sandbox_image = "{{ pause_image }}"#' /etc/containerd/config.toml
-#
-#    - name: Ensure /usr/lib/cni exists
-#      file:
-#        path: /usr/lib/cni
-#        state: directory
-#        mode: '0755'
-#
-#    - name: Download CNI plugins
-#      get_url:
-#        url: "https://github.com/containernetworking/plugins/releases/download/{{ k8s_cni_version }}/cni-plugins-linux-amd64-{{ k8s_cni_version }}.tgz"
-#        dest: /tmp/cni-plugins.tgz
-#        mode: '0644'
-#        force: yes
-#
-#    - name: Unpack CNI plugins
-#      unarchive:
-#        src: /tmp/cni-plugins.tgz
-#        dest: /usr/lib/cni
-#        remote_src: yes
-#
-#    - name: Enable and restart containerd
-#      systemd:
-#        name: containerd
-#        enabled: true
-#        state: restarted
-#
-#    - name: Ensure kubelet is enabled and started
-#      systemd:
-#        name: kubelet
-#        enabled: true
-#        state: started
-#
-#    - name: Wait for containerd socket
-#      wait_for:
-#        path: /run/containerd/containerd.sock
-#        state: present
-#        delay: 2
-#        timeout: 30
-#
-#    - name: Print ready message
-#      debug:
-#        msg: "System, containerd and Kubernetes binaries ready. Now run 'kubeadm init ...' on control-plane and join workers."
 
 - hosts: master1
   become: yes
@@ -380,11 +374,6 @@
     kube_user: "ubuntu"
     pod_cidr: "192.168.0.0/16"
   tasks:
-#    - name: kubeadm init
-#      shell: |
-#        kubeadm init --pod-network-cidr={{ pod_cidr }} --control-plane-endpoint="{{ ansible_host }}:6443" --apiserver-advertise-address="{{ ansible_host }}" --upload-certs
-#      args:
-#        creates: /etc/kubernetes/admin.conf
 
     - name: copy kubeconfig
       shell: |
@@ -642,8 +631,6 @@
 
     - name: Wait for join script on master1
       wait_for:
-#        host: "{{ hostvars['master1'].ansible_host }}"
-#        port: 22
         path: /tmp/worker_join.sh
         state: present
         delay: 5
