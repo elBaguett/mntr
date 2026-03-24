@@ -554,6 +554,7 @@ resource "aws_acm_certificate_validation" "argocd_us_east" {
 
 #Metrics#
 module "metrics" {
+  providers = { aws = aws.eu-west}
   source       = "./modules/metrics"
   cluster_name = "mntr"
   alert_email  = "mme37005@gmail.com"
