@@ -1,6 +1,10 @@
+nameOverride: cloudwatch-top-agent-{{ node_region }}
 clusterName: mntr
 region: {{ node_region }}
 k8sMode: K8S
+
+nodeSelector:
+  node-region: {{ node_region }}
 
 containerLogs:
   enabled: true
@@ -41,6 +45,7 @@ containerLogs:
             Format cri
 
 agent:
+  nameOverride: cloudwatch-ag-agent-{{ node_region }}
   enabled: true
   mode: daemonset
   image:
@@ -49,22 +54,21 @@ agent:
   customConfig:
     receivers:
       awscontainerinsightreceiver:
-        # skip verify doesnt work on amazon agents but lets leave it for reminder
         insecure_skip_verify: true
         endpoint: {{ kubelet_endpoint }}
         add_full_pod_name_metric_label: true
         add_container_name_metric_label: true
     exporters:
       awsemf:
-        region: {{node_region}}
+        region: {{ node_region }}
         log_group_name: "/aws/containerinsights/mntr/performance"
-        log_stream_name: {{node_name}}
+        log_stream_name: {{ node_name }}
     service:
       pipelines:
         metrics:
           receivers: [awscontainerinsightreceiver]
           exporters: [awsemf]
-  
+
   extraVolumes:
     - name: kubelet-ca
       hostPath:
@@ -94,6 +98,7 @@ agent:
       cpu: 500m
   serviceAccount:
     create: true
+    name: cloudwatch-agent-sa-{{ node_region }}
 
 kubeletConfig:
   insecureSkipVerify: true

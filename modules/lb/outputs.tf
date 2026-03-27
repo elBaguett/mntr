@@ -9,3 +9,7 @@ output "zone_id" {
 output "target_group_arn" {
   value = aws_lb_target_group.argocd.arn
 }
+
+output "argocd_alb_arn_suffix" {
+  value = aws_lb.argocd_alb.arn_suffix
+}

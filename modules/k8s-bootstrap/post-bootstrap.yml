@@ -33,6 +33,21 @@
     - name: Create namespace mntr
       command: kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace mntr
 
+    - name: Create roles for each env
+      command: kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f \
+              {{ home_dir }}/code/logs/metrics/ClusterRole.yaml
+
+    - name: Label K8s nodes with correct region
+      shell: |
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf label node {{ item.node }} node-region={{ item.region }} --overwrite
+      loop:
+        - { node: "ip-10-10-10-11",  region: "eu-west-1" }
+        - { node: "ip-10-10-20-14",  region: "eu-west-1" }
+        - { node: "ip-10-10-20-11",  region: "eu-west-1" }
+        - { node: "ip-10-20-10-10",  region: "us-east-1" }
+        - { node: "ip-10-20-20-10",  region: "us-east-1" }
+        - { node: "ip-10-20-20-12",  region: "us-east-1" }
+
     - name: Create secret etcd-certs
       command: sudo kubectl -n mntr --kubeconfig=/etc/kubernetes/admin.conf create secret generic etcd-certs --from-file=ca.crt=/etc/kubernetes/pki/etcd/ca.crt --from-file=server.crt=/etc/kubernetes/pki/etcd/server.crt --from-file=server.key=/etc/kubernetes/pki/etcd/server.key
 
@@ -77,26 +92,50 @@
       become_user: "{{ kube_user }}"
       shell: helm repo update
 
-    - name: Create namespace for cwagent
-      command: kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace amazon-cloudwatch
+#    - name: Create namespace for cwagent
+#      command: kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace amazon-cloudwatch
 
-    - name: Render CloudWatch values.yaml
+    - name: Render CloudWatch values.yaml for eu-west-1
       become_user: "{{ kube_user }}"
       template:
         src: "../../manifests/logs/metrics/cloudwatch-values.yaml.j2"
-        dest: "{{ home_dir }}/code/logs/metrics/values-{{ inventory_hostname }}.yaml"
+        dest: "{{ home_dir }}/code/logs/metrics/values-{{ inventory_hostname }}-eu-west.yaml"
       vars:
         kubelet_endpoint: "https://{{ ansible_hostname }}:10250"
-        node_region: "{{ 'eu-west-1' if ansible_host is search('^10\\.20\\.') else 'us-east-1' }}"
+        node_region: "eu-west-1"
         node_name: "{{ inventory_hostname }}"
 
-    - name: Install CloudWatch agent with node endpoint
+    - name: Render CloudWatch values.yaml for us-east-1
+      become_user: "{{ kube_user }}"
+      template:
+        src: "../../manifests/logs/metrics/cloudwatch-values.yaml.j2"
+        dest: "{{ home_dir }}/code/logs/metrics/values-{{ inventory_hostname }}-us-east.yaml"
+      vars:
+        kubelet_endpoint: "https://{{ ansible_hostname }}:10250"
+        node_region: "us-east-1"
+        node_name: "{{ inventory_hostname }}"
+
+    - name: Install CloudWatch agent for eu-west-1
       become_user: "{{ kube_user }}"
       shell: |
-        helm upgrade --install amazon-cloudwatch-observability \
+        helm upgrade --install amazon-cloudwatch-observability-eu-west \
           aws-observability/amazon-cloudwatch-observability \
-          --namespace amazon-cloudwatch --create-namespace \
-          -f {{ home_dir }}/code/logs/metrics/values-{{ inventory_hostname }}.yaml || true
+          --namespace amazon-cloudwatch-eu --create-namespace \
+          --set agent.nameOverride=cloudwatch-agent-eu-west-1 \
+          --set agent.serviceAccount.name=cloudwatch-agent-sa-eu-west-1 \
+          --set agent.rbac.create=false \
+          -f {{ home_dir }}/code/logs/metrics/values-{{ inventory_hostname }}-eu-west.yaml  || true
+    
+    - name: Install CloudWatch agent for us-east-1
+      become_user: "{{ kube_user }}"
+      shell: |
+        helm upgrade --install amazon-cloudwatch-observability-us-east \
+          aws-observability/amazon-cloudwatch-observability \
+          --namespace amazon-cloudwatch-us --create-namespace \
+          --set agent.nameOverride=cloudwatch-agent-us-east-1 \
+          --set agent.serviceAccount.name=cloudwatch-agent-sa-us-east-1 \
+          --set agent.rbac.create=false \
+          -f {{ home_dir }}/code/logs/metrics/values-{{ inventory_hostname }}-us-east.yaml || true
 
     - name: Wait for argocd-initial-admin-secret
       shell: kubectl --kubeconfig=/etc/kubernetes/admin.conf -n argocd get secret argocd-initial-admin-secret --no-headers

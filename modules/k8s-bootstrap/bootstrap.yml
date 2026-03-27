@@ -514,6 +514,10 @@
         kubectl apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
       args:
         creates: /home/{{ kube_user }}/argocd_installed.flag
+      retries: 5
+      delay: 10
+      until: argocd_result.rc == 0
+      register: argocd_result  
 
     - name: Convert argocd to NodePort
       become_user: "{{ kube_user }}"

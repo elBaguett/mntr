@@ -450,15 +450,31 @@ resource "null_resource" "copy_key_to_bastion" {
   }
 }
 
-resource "null_resource" "copy_manifests" {
-  depends_on = [null_resource.copy_key_to_bastion, module.master_eu_west]
+variable "node_ips" {
+  default = [
+    "10.10.10.11",
+    "10.20.10.10",
+    "10.10.20.14",
+    "10.20.20.12",
+    "10.10.20.11",
+    "10.20.20.10"
+  ]
+}
+
+
+resource "null_resource" "copy_manifests_parallel" {
+  for_each = toset(var.node_ips)
+  depends_on = [null_resource.copy_key_to_bastion, module.master_eu_west, 
+  module.master_us_east, module.stateful_worker1, module.stateful_worker2,
+  module.stateless_worker1, module.stateless_worker2]
+
   provisioner "local-exec" {
-    command = "scp -i ~/.ssh/id_ed25519 -o \"StrictHostKeyChecking=no\" -o \"UserKnownHostsFile=/dev/null\" -o ProxyCommand=\"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_ed25519 -W %h:%p ubuntu@${aws_eip.bastion.public_ip}\" -r ./manifests ubuntu@10.20.10.10:/home/ubuntu/code"
+    command = "scp -i ~/.ssh/id_ed25519 -o 'StrictHostKeyChecking=no' -o 'UserKnownHostsFile=/dev/null' -o ProxyCommand='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_ed25519 -W %h:%p ubuntu@${aws_eip.bastion.public_ip}' -r ./manifests ubuntu@${each.key}:/home/ubuntu/code"
   }
 }
 
 resource "null_resource" "ansible_apply" {
-  depends_on = [local_file.ansible_inventory, null_resource.copy_manifests]
+  depends_on = [local_file.ansible_inventory, null_resource.copy_manifests_parallel]
   provisioner "local-exec" {
     command = "sleep 30 && ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i ./ansible_hosts.ini ./modules/k8s-bootstrap/bootstrap.yml --private-key=~/.ssh/id_ed25519 && sleep 30 && ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i ./ansible_hosts.ini ./modules/k8s-bootstrap/post-bootstrap.yml --private-key=~/.ssh/id_ed25519"
   }
@@ -553,10 +569,19 @@ resource "aws_acm_certificate_validation" "argocd_us_east" {
 #DNS#
 
 #Metrics#
-module "metrics" {
+module "metrics_eu" {
   providers = { aws = aws.eu-west}
   source       = "./modules/metrics"
   cluster_name = "mntr"
   alert_email  = "mme37005@gmail.com"
+  argocd_alb_arn_suffix = module.load_balancer_eu_west.argocd_alb_arn_suffix
+}
+
+module "metrics_us" {
+  providers = { aws = aws.us-east}
+  source       = "./modules/metrics"
+  cluster_name = "mntr"
+  alert_email  = "mme37005@gmail.com"
+  argocd_alb_arn_suffix = module.load_balancer_us_east.argocd_alb_arn_suffix
 }
 #Metrics#

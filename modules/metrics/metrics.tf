@@ -63,7 +63,7 @@ resource "aws_cloudwatch_metric_alarm" "argocd_alb_5xx" {
   namespace           = "AWS/ApplicationELB"
   metric_name         = "HTTPCode_Target_5XX_Count"
   dimensions = {
-    LoadBalancer = aws_lb.argocd_alb.arn_suffix
+    LoadBalancer = var.argocd_alb_arn_suffix
   }
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
@@ -167,7 +167,7 @@ resource "aws_cloudwatch_dashboard" "alb_dashboard" {
           "view": "timeSeries",
           "annotations": {},
           "metrics": [
-            [ "AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", aws_lb.argocd_alb.arn_suffix ]
+            [ "AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer",   var.argocd_alb_arn_suffix ]
           ],
           "stat": "Sum",
           "period": 60
@@ -182,7 +182,7 @@ resource "aws_cloudwatch_dashboard" "alb_dashboard" {
           "view": "timeSeries",
           "annotations": {},
           "metrics": [
-            [ "AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", aws_lb.argocd_alb.arn_suffix, { "stat": "p95" } ]
+            [ "AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer",  var.argocd_alb_arn_suffix, { "stat": "p95" } ]
           ],
           "stat": "p95",
           "period": 60
