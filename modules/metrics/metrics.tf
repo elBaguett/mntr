@@ -9,36 +9,48 @@ resource "aws_sns_topic_subscription" "email" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "pod_crashloop" {
-  alarm_name          = "${var.cluster_name}-pod-crashloop"
+  alarm_name          = "${var.cluster_name}-pod-restarts"
   namespace           = "ContainerInsights"
-  metric_name         = "pod_status_failed"
+  metric_name         = "pod_number_of_container_restarts" 
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
-  period              = 60
+  period              = 300
   statistic           = "Sum"
-  threshold           = 0
-  alarm_description   = "Pod CrashLoopBackOff detected in ${var.cluster_name}"
+  threshold           = 3
+  alarm_description   = "High number of container restarts in ${var.cluster_name}"
   dimensions = {
     ClusterName = var.cluster_name
-    PodStatus   = "CrashLoopBackOff"
   }
   alarm_actions = [aws_sns_topic.alerts.arn]
 }
 
 resource "aws_cloudwatch_metric_alarm" "node_not_ready" {
-  alarm_name          = "${var.cluster_name}-node-not-ready"
+  alarm_name          = "${var.cluster_name}-node-failed"
   namespace           = "ContainerInsights"
-  metric_name         = "node_status_condition_ready"
+  metric_name         = "node_number_of_running_pods" 
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = 2
   period              = 60
-  statistic           = "Sum"
-  threshold           = 0
-  alarm_description   = "Node NotReady in ${var.cluster_name}"
+  statistic           = "SampleCount" 
+  threshold           = 1
+  alarm_description   = "Node failure detected in ${var.cluster_name}"
   dimensions = {
     ClusterName = var.cluster_name
-    NodeStatus  = "NotReady"
   }
+  alarm_actions = [aws_sns_topic.alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "node_failed" {
+  alarm_name          = "${var.cluster_name}-nodes-failed"
+  namespace           = "ContainerInsights"
+  metric_name         = "cluster_failed_node_count"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  period              = 60
+  statistic           = "Maximum"
+  threshold           = 0
+  alarm_description   = "Node failed ${var.cluster_name}"
+  dimensions = { ClusterName = var.cluster_name }
   alarm_actions = [aws_sns_topic.alerts.arn]
 }
 
@@ -63,91 +75,41 @@ resource "aws_cloudwatch_metric_alarm" "argocd_alb_5xx" {
   namespace           = "AWS/ApplicationELB"
   metric_name         = "HTTPCode_Target_5XX_Count"
   dimensions = {
-    LoadBalancer = var.argocd_alb_arn_suffix
+    LoadBalancer = var.argocd_alb_arn_suffix 
   }
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
   period              = 60
   statistic           = "Sum"
   threshold           = 5
-  alarm_description   = "5xx от целевых серверов argocd-alb"
   alarm_actions       = [aws_sns_topic.alerts.arn]
 }
-
 resource "aws_cloudwatch_dashboard" "k8s_dashboard" {
   dashboard_name = "${var.cluster_name}-dashboard"
   dashboard_body = jsonencode({
     widgets = [
       {
         "type": "metric",
-        "x": 0,
-        "y": 0,
-        "width": 12,
-        "height": 6,
         "properties": {
-          "region": "eu-west-1", 
-          "view": "timeSeries",
-          "title": "K8s Nodes NotReady",
           "metrics": [
-            [ "ContainerInsights", "node_status", "ClusterName", var.cluster_name, "NodeStatus", "NotReady" ]
+            [ "ContainerInsights", "pod_number_of_container_restarts", "ClusterName", var.cluster_name ]
           ],
-          "period": 60,
+          "period": 300,
           "stat": "Sum",
-          "annotations": {}
+          "region": "eu-west-1",
+          "title": "Pod Restarts (Potential CrashLoop)"
         }
       },
       {
         "type": "metric",
-        "x": 0,
-        "y": 6,
-        "width": 12,
-        "height": 6,
         "properties": {
-          "region": "eu-west-1",
-          "view": "timeSeries",
-          "title": "K8s CrashLoopBackOff Pods",
           "metrics": [
-            [ "ContainerInsights", "pod_status", "ClusterName", var.cluster_name, "PodStatus", "CrashLoopBackOff" ]
-          ],
-          "period": 60,
-          "stat": "Sum",
-          "annotations": {}
-        }
-      },
-      {
-        "type": "metric",
-        "x": 0,
-        "y": 12,
-        "width": 12,
-        "height": 6,
-        "properties": {
-          "region": "eu-west-1",
-          "view": "timeSeries",
-          "title": "API Server Latency (s)",
-          "metrics": [
-            [ "ContainerInsights", "api_server_latency", "ClusterName", var.cluster_name ]
+            [ "ContainerInsights", "node_cpu_utilization", "ClusterName", var.cluster_name ]
           ],
           "period": 60,
           "stat": "Average",
-          "annotations": {}
-        }
-      },
-      {
-        "type": "metric",
-        "x": 0,
-        "y": 18,
-        "width": 12,
-        "height": 6,
-        "properties": {
           "region": "eu-west-1",
-          "view": "timeSeries",
-          "title": "Frontend 5xx errors",
-          "metrics": [
-            [ "ContainerInsights", "http_status_code", "ClusterName", var.cluster_name, "Namespace", "frontend", "code", "5xx" ]
-          ],
-          "period": 60,
-          "stat": "Sum",
-          "annotations": {}
+          "title": "Node CPU Utilization"
         }
       }
     ]
