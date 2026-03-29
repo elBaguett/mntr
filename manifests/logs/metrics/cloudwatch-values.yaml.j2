@@ -3,8 +3,6 @@ clusterName: mntr
 region: {{ node_region }}
 k8sMode: K8S
 
-nodeSelector:
-  node-region: {{ node_region }}
 
 containerLogs:
   enabled: true
@@ -45,8 +43,15 @@ containerLogs:
             Format cri
 
 agent:
-  nameOverride: cloudwatch-ag-agent-{{ node_region }}
+  nodeSelector:
+    node-region: {{ node_region }}
+  nameOverride: cloudwatch-agent-{{ node_region }}
   enabled: true
+  serviceAccount:
+    create: false
+    name: cloudwatch-agent-sa-{{ node_region }}
+  createClusterRole: false
+  createRole: false
   mode: daemonset
   image:
     repository: cloudwatch-agent
@@ -96,9 +101,6 @@ agent:
     limits:
       memory: 512Mi
       cpu: 500m
-  serviceAccount:
-    create: true
-    name: cloudwatch-agent-sa-{{ node_region }}
 
 kubeletConfig:
   insecureSkipVerify: true

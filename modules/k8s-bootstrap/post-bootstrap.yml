@@ -31,11 +31,20 @@
         remote_src: yes
 
     - name: Create namespace mntr
-      command: kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace mntr
+      command: |
+          kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace mntr
+
+    - name: Create namespace eu
+      command: |
+          kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace amazon-cloudwatch-eu
+
+    - name: Create namespace us
+      command: |
+          kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace amazon-cloudwatch-us
 
     - name: Create roles for each env
       command: kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f \
-              {{ home_dir }}/code/logs/metrics/ClusterRole.yaml
+              {{ home_dir }}/code/logs/metrics/k8s_res
 
     - name: Label K8s nodes with correct region
       shell: |
@@ -92,9 +101,6 @@
       become_user: "{{ kube_user }}"
       shell: helm repo update
 
-#    - name: Create namespace for cwagent
-#      command: kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace amazon-cloudwatch
-
     - name: Render CloudWatch values.yaml for eu-west-1
       become_user: "{{ kube_user }}"
       template:
@@ -119,22 +125,18 @@
       become_user: "{{ kube_user }}"
       shell: |
         helm upgrade --install amazon-cloudwatch-observability-eu-west \
-          aws-observability/amazon-cloudwatch-observability \
-          --namespace amazon-cloudwatch-eu --create-namespace \
-          --set agent.nameOverride=cloudwatch-agent-eu-west-1 \
-          --set agent.serviceAccount.name=cloudwatch-agent-sa-eu-west-1 \
-          --set agent.rbac.create=false \
+          {{ home_dir }}/code/logs/metrics/amazon-cloudwatch-observability \
+          --namespace amazon-cloudwatch-eu \
+          --set agent.createClusterRole=false \
           -f {{ home_dir }}/code/logs/metrics/values-{{ inventory_hostname }}-eu-west.yaml  || true
     
     - name: Install CloudWatch agent for us-east-1
       become_user: "{{ kube_user }}"
       shell: |
         helm upgrade --install amazon-cloudwatch-observability-us-east \
-          aws-observability/amazon-cloudwatch-observability \
-          --namespace amazon-cloudwatch-us --create-namespace \
-          --set agent.nameOverride=cloudwatch-agent-us-east-1 \
-          --set agent.serviceAccount.name=cloudwatch-agent-sa-us-east-1 \
-          --set agent.rbac.create=false \
+          {{ home_dir }}/code/logs/metrics/amazon-cloudwatch-observability \
+          --namespace amazon-cloudwatch-us \
+          --set agent.createClusterRole=false \
           -f {{ home_dir }}/code/logs/metrics/values-{{ inventory_hostname }}-us-east.yaml || true
 
     - name: Wait for argocd-initial-admin-secret

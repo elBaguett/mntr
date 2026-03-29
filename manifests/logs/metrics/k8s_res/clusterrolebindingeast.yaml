@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cloudwatch-agent-us-east-1-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cloudwatch-agent-us-east-1-role    
+subjects:
+  - kind: ServiceAccount
+    name: cloudwatch-agent-sa-us-east-1    
+    namespace: amazon-cloudwatch-us
