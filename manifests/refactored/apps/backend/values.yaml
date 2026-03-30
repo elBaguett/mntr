@@ -1,0 +1,17 @@
+replicaCount: 1
+#here replace latest tag with smth like {{tag received from build pipeline}}
+image:
+  repository: lebonkdoge/mntr
+  tag: backend-latest
+  pullPolicy: Always
+
+service:
+  port: 8080
+
+env:
+  DB_HOST: db
+  DB_USER: user
+  DB_PASSWORD: password
+  DB_NAME: testdb
+
+resources: {}

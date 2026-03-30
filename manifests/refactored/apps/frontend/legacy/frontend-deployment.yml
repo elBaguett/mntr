@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: lebonkdoge/mntr:frontend-latest
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - mountPath: /etc/angie/angie.conf
+              name: default-conf
+              subPath: default.conf
+      volumes:
+        - name: default-conf
+          configMap:
+            name: frontend-conf
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-conf
+data:
+  default.conf: |
+    events {}
+    http {
+        server {
+            listen 80;
+            location / {
+                proxy_pass http://backend:8080/;
+            }
+        }
+    }

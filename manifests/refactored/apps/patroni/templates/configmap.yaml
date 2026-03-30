@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "patroni.fullname" . }}-config
+data:
+  patroni.yaml: |
+    scope: pg-cluster
+    name: ${POD_NAME}
+    restapi:
+      listen: 0.0.0.0:8008
+      connect_address: ${POD_IP}:8008
+    etcd3:
+      hosts:
+        {{- range .Values.etcd.hosts }}
+        - {{ . }}
+        {{- end }}
+      protocol: {{ .Values.etcd.protocol }}
+      cacert: {{ .Values.etcd.cacert }}
+      cert: {{ .Values.etcd.cert }}
+      key: {{ .Values.etcd.key }}
+    bootstrap:
+      dcs:
+        ttl: 30
+        loop_wait: 10
+        retry_timeout: 10
+      initdb:
+        - encoding: UTF8
+        - locale: en_US.UTF-8
+        - auth-host: md5
+        - auth-local: trust
+      users:
+        replicator:
+          password: {{ .Values.env.replicator_password }}
+          options:
+            - replication
+    postgresql:
+      listen: 0.0.0.0:5432
+      connect_address: ${POD_IP}:5432
+      data_dir: /var/lib/postgresql/data
+      authentication:
+        superuser:
+          username: postgres
+          password: {{ .Values.env.superuser_password }}
+        replication:
+          username: replicator
+          password: {{ .Values.env.replicator_password }}
+      parameters:
+        wal_level: replica
+        hot_standby: "on"
+        max_wal_senders: 5
+      pg_hba:
+        - local all all trust
+        - host all all 0.0.0.0/0 md5
+        - host replication replicator all md5
+        - hostssl replication replicator all md5
+        - host all all all md5
