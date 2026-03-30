@@ -63,7 +63,7 @@ jobs:
         run: |
           sed -i "s/tag: frontend-.*/tag: frontend-${{ github.sha }}/" manifests/refactored/apps/frontend/values.yaml
           sed -i "s/tag: backend-.*/tag: backend-${{ github.sha }}/" manifests/refactored/apps/backend/values.yaml
-          sed -i "s/tag: db-.*/tag: db-${{ github.sha }}/" manifests/refactored/apps/db/values.yaml
+          sed -i "s/tag: db-.*/tag: db-${{ github.sha }}/" manifests/refactored/apps/patroni/values.yaml
 
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
