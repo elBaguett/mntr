@@ -52,11 +52,14 @@ jobs:
           cd ./manifests/db
           docker build -t $DOCKER_USER/mntr-db:$IMAGE_TAG .
           docker push $DOCKER_USER/mntr-db:$IMAGE_TAG
+
       - name: Set up Git user and remotes
+        env: 
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
-          git remote set-url origin https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/elBaguett/mntr.git
+          git remote set-url origin https://x-access-token:GH_TOKEN@github.com/elBaguett/mntr.git
 
 
       - name: Update Helm image tags for frontend, backend, db
