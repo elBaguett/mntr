@@ -107,7 +107,7 @@
         src: "../../manifests/logs/metrics/cloudwatch-values.yaml.j2"
         dest: "{{ home_dir }}/code/logs/metrics/values-{{ inventory_hostname }}-eu-west.yaml"
       vars:
-        kubelet_endpoint: "https://{{ ansible_hostname }}:10250"
+        kubelet_endpoint: "https://{{ ansible_facts['hostname'] }}:10250"
         node_region: "eu-west-1"
         node_name: "{{ inventory_hostname }}"
 
@@ -117,7 +117,7 @@
         src: "../../manifests/logs/metrics/cloudwatch-values.yaml.j2"
         dest: "{{ home_dir }}/code/logs/metrics/values-{{ inventory_hostname }}-us-east.yaml"
       vars:
-        kubelet_endpoint: "https://{{ ansible_hostname }}:10250"
+        kubelet_endpoint: "https://{{ ansible_facts['hostname'] }}:10250"
         node_region: "us-east-1"
         node_name: "{{ inventory_hostname }}"
 
