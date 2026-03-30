@@ -57,9 +57,9 @@ jobs:
         env: 
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
-          git remote set-url origin https://x-access-token:GH_TOKEN@github.com/elBaguett/mntr.git
+          git config --global user.name "elBaguett"
+          git config --global user.email "mme37005@gmail.com"
+          git remote set-url origin https://x-access-token:$GH_TOKEN@github.com/elBaguett/mntr.git
 
 
       - name: Update Helm image tags for frontend, backend, db
@@ -70,8 +70,8 @@ jobs:
           sed -i "s/tag: backend-.*/tag: backend-${{ github.sha }}/" manifests/refactored/apps/backend/values.yaml
           sed -i "s/tag: db-.*/tag: db-${{ github.sha }}/" manifests/refactored/apps/patroni/values.yaml
 
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
+          git config --global user.name "elBaguett"
+          git config --global user.email "mme37005@gmail.com"
           git add manifests/refactored/apps/frontend/values.yaml \
                   manifests/refactored/apps/backend/values.yaml \
                   manifests/refactored/apps/patroni/values.yaml
@@ -92,4 +92,3 @@ jobs:
       - name: Terraform Apply
         run: terraform apply -auto-approve -input=false
 
-        
