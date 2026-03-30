@@ -2,7 +2,7 @@ replicaCount: 1
 #here replace latest tag with smth like {{tag received from build pipeline}}
 image:
   repository: lebonkdoge/mntr
-  tag: backend-3390331670a218bca3175e50558eb157557bd65d
+  tag: backend-da9adc614dbeefb44bd0090d1a7a1c9444512aa6
   pullPolicy: Always
 
 service:
