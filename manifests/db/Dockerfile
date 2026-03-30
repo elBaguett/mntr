@@ -17,6 +17,7 @@ RUN python3 -m venv /patroni-venv
 ENV PATH="/patroni-venv/bin:$PATH"
 RUN pip install --upgrade pip
 RUN pip install --no-cache-dir patroni[etcd] psycopg2-binary
+RUN pip uninstall -y psutil && pip install --no-binary :all: psutil
 # ------------------------------------------
 COPY patroni.yaml /etc/patroni.yaml
 

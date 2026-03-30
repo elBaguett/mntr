@@ -5,6 +5,14 @@ terraform {
       version = ">= 6.0"
     }
   }
+  backend "s3" {
+    bucket         = "tfstate-mntr"
+    key            = "global/terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+#    profile        = "default"
+#    dynamodb_table = "tfstate-mntr-lock" for parallel run, now not needed
+  }
 }
 
 locals {
@@ -505,7 +513,7 @@ resource "aws_route53_record" "argocd_east" {
 
 resource "aws_route53_record" "argocd_west" {
   depends_on = [module.load_balancer_eu_west,
-  null_resource.ansible_apply, ]
+  null_resource.ansible_apply ]
   zone_id = data.aws_route53_zone.main.zone_id
   name    = "argocd"
   type    = "A"
@@ -585,3 +593,10 @@ module "metrics_us" {
   argocd_alb_arn_suffix = module.load_balancer_us_east.argocd_alb_arn_suffix
 }
 #Metrics#
+
+resource "null_resource" "argocd_sync" {
+  depends_on = [aws_route53_record.argocd_east, aws_route53_record.argocd_west]
+  provisioner "local-exec" {
+    command = "sleep 30 && ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i ./ansible_hosts.ini ./modules/k8s-bootstrap/argocd_auto_apply.yml --private-key=~/.ssh/id_ed25519"
+  }
+}
