@@ -70,7 +70,7 @@ jobs:
         run: |
           git config --global user.name "elBaguett"
           git config --global user.email "mme37005@gmail.com"
-          git remote set-url origin https://x-access-token:$GH_TOKEN@github.com/elBaguett/mntr.git
+          git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/elBaguett/mntr.git
 
 
       - name: Update Helm image tags for frontend, backend, db
