@@ -517,7 +517,15 @@
       retries: 5
       delay: 10
       until: argocd_result.rc == 0
-      register: argocd_result  
+      register: argocd_result 
+
+    - name: Wait for ArgoCD API deployment ready
+      shell: |
+        kubectl -n argocd get deploy argocd-server -o jsonpath='{.status.readyReplicas}'
+      register: readyreplicas
+      retries: 30
+      delay: 10
+      until: readyreplicas.stdout|int > 0  
 
     - name: Convert argocd to NodePort
       become_user: "{{ kube_user }}"
