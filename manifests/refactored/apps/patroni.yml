@@ -8,7 +8,7 @@ spec:
   source:
     repoURL: 'https://github.com/elBaguett/mntr.git'
     targetRevision: main
-    path: manifests/refactored/patroni
+    path: manifests/refactored/apps/patroni
     helm:
       valueFiles:
         - values.yaml

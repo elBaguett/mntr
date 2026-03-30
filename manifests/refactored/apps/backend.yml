@@ -8,7 +8,7 @@ spec:
   source:
     repoURL: 'https://github.com/elBaguett/mntr.git'
     targetRevision: main
-    path: manifests/refactored/backend
+    path: manifests/refactored/apps/backend
     helm:
       valueFiles:
         - values.yaml
