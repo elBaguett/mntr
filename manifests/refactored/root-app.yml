@@ -8,7 +8,7 @@ spec:
   source:
     repoURL: 'https://github.com/elBaguett/mntr.git'
     targetRevision: main
-    path: manifests/refactored
+    path: manifests/refactored/apps
     directory:
       recurse: true
   destination:

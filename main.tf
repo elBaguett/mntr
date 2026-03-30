@@ -524,7 +524,7 @@ resource "aws_route53_record" "argocd_west" {
 
 resource "aws_acm_certificate" "argocd_us_east" {
   provider          = aws.us-east
-  domain_name       = "argocd.click"
+  domain_name       = "argocd.argocd.click"
   validation_method = "DNS"
 
   lifecycle {
@@ -534,7 +534,7 @@ resource "aws_acm_certificate" "argocd_us_east" {
 
 resource "aws_acm_certificate" "argocd_eu_west" {
   provider          = aws.eu-west
-  domain_name       = "argocd.click"
+  domain_name       = "argocd.argocd.click"
   validation_method = "DNS"
 
   lifecycle {

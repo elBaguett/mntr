@@ -60,7 +60,7 @@ resource "aws_security_group" "k8s" {
   }
 
   ingress {
-    description = "Backend (nginx → go app)"
+    description = "Backend (nginx to go app)"
     from_port   = 8080
     to_port     = 8080
     protocol    = "tcp"
@@ -89,6 +89,14 @@ resource "aws_security_group" "k8s" {
     to_port     = 32767
     protocol    = "tcp"
     cidr_blocks = ["10.10.0.0/16", "10.20.0.0/16"]
+  }
+
+  ingress {
+    description = "ArgoCD UI"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
