@@ -83,6 +83,7 @@ jobs:
 
           git config --global user.name "elBaguett"
           git config --global user.email "mme37005@gmail.com"
+          git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/elBaguett/mntr.git
           git add manifests/refactored/apps/frontend/values.yaml \
                   manifests/refactored/apps/backend/values.yaml \
                   manifests/refactored/apps/patroni/values.yaml
