@@ -69,7 +69,7 @@ jobs:
           git config --global user.email "github-actions@github.com"
           git add manifests/refactored/apps/frontend/values.yaml \
                   manifests/refactored/apps/backend/values.yaml \
-                  manifests/refactored/apps/db/values.yaml
+                  manifests/refactored/apps/patroni/values.yaml
           git commit -m "Update image tags to ${{ github.sha }}"
           git push
 
@@ -86,4 +86,3 @@ jobs:
 
       - name: Terraform Apply
         run: terraform apply -auto-approve -input=false
-        
