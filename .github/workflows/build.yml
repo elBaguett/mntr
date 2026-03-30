@@ -63,6 +63,8 @@ jobs:
 
 
       - name: Update Helm image tags for frontend, backend, db
+        env: 
+            GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           sed -i "s/tag: frontend-.*/tag: frontend-${{ github.sha }}/" manifests/refactored/apps/frontend/values.yaml
           sed -i "s/tag: backend-.*/tag: backend-${{ github.sha }}/" manifests/refactored/apps/backend/values.yaml
@@ -89,3 +91,5 @@ jobs:
 
       - name: Terraform Apply
         run: terraform apply -auto-approve -input=false
+
+        
