@@ -1,0 +1,34 @@
+---
+- hosts: master2
+  become: yes
+  vars:
+    kube_user: "ubuntu"
+    home_dir: "/home/ubuntu"
+    kubeconfig: "/etc/kubernetes/admin.conf"
+    calicoctl_version: "v3.31.4"
+    calico_operator_version: "v3.29.0"
+    allow_policy: "{{ home_dir }}/code/calico/allow-all.yml"
+    aws_region: "{{ 'eu-west-1' if ansible_host is search('^10\\.20\\.') else 'us-east-1' }}"
+    log_group_tmpl: "/k8s/app/\\$kubernetes['namespace_name']"
+
+  tasks:
+
+    - name: Read ArgoCD admin password from file
+      slurp:
+        src: secrets/argocd-admin-password.txt
+      register: argocd_admin_pw
+    
+    - name: Automatically register Repo and Create App
+      shell: |
+        argocd login argocd.argocd.click --core --username admin --password {{ argocd_admin_pw['content'] | b64decode | trim }} --insecure
+        argocd repo add https://github.com/elBaguett/mntr.git --upsert
+        argocd app create mntr \
+          --repo https://github.com/elBaguett/mntr.git \
+          --path /manifests/refactored \
+          --dest-server https://kubernetes.default.svc \
+          --dest-namespace mntr \
+          --sync-policy automated \
+          --self-heal \
+          --upsert
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"   
