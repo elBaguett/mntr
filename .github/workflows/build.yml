@@ -34,6 +34,17 @@ jobs:
           cd ./manifests/backend
           docker build -t $DOCKER_USER/mntr-backend:$IMAGE_TAG .
           docker push $DOCKER_USER/mntr-backend:$IMAGE_TAG
+      
+      - name: Debug push
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          set -x
+          git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/elBaguett/mntr.git
+          git remote -v
+          git fetch
+          git status
+          ls -la
 
       - name: Build & Push frontend
         env:
