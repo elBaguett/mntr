@@ -20,11 +20,12 @@
     
     - name: Automatically register Repo and Create App
       shell: |
-        argocd login argocd.argocd.click --core --username admin --password {{ argocd_admin_pw['content'] | b64decode | trim }} --insecure
-        argocd repo add https://github.com/elBaguett/mntr.git --upsert
+        argocd login argocd.argocd.click --username admin --password {{ argocd_admin_pw['content'] | b64decode | trim }} --insecure
+        sleep 30        
+        argocd repo add https://github.com/elBaguett/mntr.git
         argocd app create mntr \
           --repo https://github.com/elBaguett/mntr.git \
-          --path /manifests/refactored \
+          --path manifests/refactored \
           --dest-server https://kubernetes.default.svc \
           --dest-namespace mntr \
           --sync-policy automated \

@@ -57,6 +57,44 @@
         - { node: "ip-10-20-20-10",  region: "us-east-1" }
         - { node: "ip-10-20-20-12",  region: "us-east-1" }
 
+    - name: Install Argo CD in cluster (kubectl apply)
+      become_user: "{{ kube_user }}"
+      environment:
+        KUBECONFIG: /home/{{ kube_user }}/.kube/config
+      shell: |
+        kubectl create namespace argocd || true
+        kubectl apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+      args:
+        creates: /home/{{ kube_user }}/argocd_installed.flag
+      retries: 5
+      delay: 10
+      until: argocd_result.rc == 0
+      register: argocd_result 
+
+    - name: Wait for ArgoCD API deployment ready
+      shell: |
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n argocd get deploy argocd-server -o jsonpath='{.status.readyReplicas}'
+      register: readyreplicas
+      retries: 30
+      delay: 10
+      until: readyreplicas.stdout|int > 0  
+
+    - name: Convert argocd to NodePort
+      shell: |
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf patch svc argocd-server -n argocd -p '{"spec":{"type":"NodePort", "ports":[{"port":80,"targetPort":8080,"nodePort":32012},{"port":443,"targetPort":8080,"nodePort":30282}]}}'
+
+    - name: Install Helm
+      shell: |
+        curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+
+    - name: Flag Argo CD installed
+      file:
+        path: /home/{{ kube_user }}/argocd_installed.flag
+        state: touch
+        owner: "{{ kube_user }}"
+        group: "{{ kube_user }}"
+        mode: '0644'    
+
     - name: Create secret etcd-certs
       command: sudo kubectl -n mntr --kubeconfig=/etc/kubernetes/admin.conf create secret generic etcd-certs --from-file=ca.crt=/etc/kubernetes/pki/etcd/ca.crt --from-file=server.crt=/etc/kubernetes/pki/etcd/server.crt --from-file=server.key=/etc/kubernetes/pki/etcd/server.key
 
