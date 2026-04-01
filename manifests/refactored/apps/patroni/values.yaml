@@ -2,7 +2,7 @@ replicaCount: 2
 #here replace latest tag with smth like {{tag received from build pipeline}}
 image:
   repository: lebonkdoge/mntr
-  tag: db-ffcf4212ea8a75cae4383370eea0a137da7cac82
+  tag: db-fe6da01ff41673ec1390c37b00f640102c956f54
   pullPolicy: IfNotPresent
 
 env:
